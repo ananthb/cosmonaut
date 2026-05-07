@@ -14,6 +14,7 @@ import (
 
 	"github.com/linuskendall/cosmonaut/internal/codespace"
 	"github.com/linuskendall/cosmonaut/internal/config"
+	"github.com/linuskendall/cosmonaut/internal/provider"
 )
 
 // Daemon is the long-running background process that hosts the system tray,
@@ -27,6 +28,7 @@ type Daemon struct {
 
 	mu         sync.Mutex
 	codespaces []codespace.Codespace
+	workspaces []provider.Workspace
 	portCache  map[string]portCacheEntry
 	forwards   *PortForwardManager
 	listErr    error
@@ -167,11 +169,27 @@ func (d *Daemon) Codespaces() []codespace.Codespace {
 	return result
 }
 
+// Workspaces returns the last-polled combined workspace list.
+func (d *Daemon) Workspaces() []provider.Workspace {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	result := make([]provider.Workspace, len(d.workspaces))
+	copy(result, d.workspaces)
+	return result
+}
+
 // SetCodespaces updates the cached codespace list.
 func (d *Daemon) SetCodespaces(cs []codespace.Codespace) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.codespaces = cs
+}
+
+// SetWorkspaces updates the cached combined workspace list.
+func (d *Daemon) SetWorkspaces(ws []provider.Workspace) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.workspaces = ws
 }
 
 // ListErr returns the error from the most recent codespace list attempt,

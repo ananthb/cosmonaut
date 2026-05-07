@@ -4,7 +4,7 @@
 
 # Cosmonaut Launcher
 
-CLI and menu bar applet for GitHub Codespaces + [Zed](https://zed.dev).
+CLI and menu bar applet for GitHub Codespaces or Coder workspaces + [Zed](https://zed.dev).
 
 **[Documentation](https://linuskendall.github.io/cosmonaut/)** ·
 **[Configuration](https://linuskendall.github.io/cosmonaut/config/)** ·
@@ -38,7 +38,7 @@ Or with [Home Manager](https://linuskendall.github.io/cosmonaut/install/#home-ma
 ## Quick start
 
 ```bash
-# Launch interactively: pick a repo, select a codespace, open in Zed
+# Launch interactively: pick a repo/workspace and open it in Zed
 cosmonaut
 
 # Or use a named target from your config
@@ -50,6 +50,8 @@ cosmonaut applet
 
 ## Requirements
 
-- [`gh`](https://cli.github.com/) authenticated (`gh auth login`)
+- One workspace provider CLI:
+  - [`gh`](https://cli.github.com/) authenticated (`gh auth login`) for GitHub Codespaces
+  - [`coder`](https://coder.com/docs/install/cli) authenticated (`coder login`) for Coder
 - [`zed`](https://zed.dev) installed
-- SSH server in your codespace image ([`ghcr.io/devcontainers/features/sshd:1`](https://github.com/devcontainers/features/tree/main/src/sshd))
+- SSH access enabled in your remote workspace image

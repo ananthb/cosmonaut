@@ -58,7 +58,53 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.DefaultTarget != "demo" {
 		t.Errorf("defaultTarget = %q, want demo", cfg.DefaultTarget)
 	}
+	if cfg.WorkspaceProvider != "github" {
+		t.Errorf("workspaceProvider = %q, want github default", cfg.WorkspaceProvider)
+	}
 	if _, ok := cfg.Targets["demo"]; !ok {
 		t.Error("missing target 'demo'")
+	}
+}
+
+func TestLoadCoderConfig(t *testing.T) {
+	content := `{
+		"workspaceProvider": "coder",
+		"providers": {
+			"coder": {
+				"organization": "coder"
+			}
+		},
+		"targets": {
+			"work": {
+				"workspacePath": "/workspaces/demo",
+				"coder": {
+					"template": "nomad-devcontainer",
+					"workspaceName": "demo",
+					"parameters": {
+						"repo": "acme/demo"
+					},
+					"stopAfter": "8h"
+				}
+			}
+		}
+	}`
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	os.WriteFile(path, []byte(content), 0644)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.EffectiveWorkspaceProvider(); got != "coder" {
+		t.Fatalf("workspace provider = %q, want coder", got)
+	}
+	target := cfg.Targets["work"]
+	if target.Coder == nil || target.Coder.Template != "nomad-devcontainer" {
+		t.Fatalf("coder target not parsed: %+v", target.Coder)
+	}
+	if target.Coder.Parameters["repo"] != "acme/demo" {
+		t.Fatalf("coder parameters = %+v", target.Coder.Parameters)
 	}
 }

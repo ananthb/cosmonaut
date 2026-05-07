@@ -10,6 +10,7 @@ import (
 
 	"github.com/linuskendall/cosmonaut/internal/codespace"
 	"github.com/linuskendall/cosmonaut/internal/history"
+	"github.com/linuskendall/cosmonaut/internal/provider"
 )
 
 const maxSubmenuCodespaces = 5
@@ -18,58 +19,19 @@ const maxSubmenuCodespaces = 5
 // and cached codespace state.
 func (d *Daemon) buildTrayMenu() *fyne.Menu {
 	var items []*fyne.MenuItem
-	seen := make(map[string]bool)
 
-	// ── Spaces heading ──
-	heading := fyne.NewMenuItem("Spaces", nil)
-	heading.Disabled = true
-	items = append(items, heading)
-
-	// Default target.
-	if d.Cfg != nil && d.Cfg.DefaultTarget != "" {
-		if t, ok := d.Cfg.Targets[d.Cfg.DefaultTarget]; ok {
-			name := d.Cfg.DefaultTarget
-			item := fyne.NewMenuItem("Open "+name, func() {
-				go d.showGUI(name)
-			})
-			if sub := d.codespaceSubmenu(t.Repository, name); sub != nil {
-				item.ChildMenu = sub
-			}
-			items = append(items, item)
-			seen[t.Repository] = true
-		}
+	if githubItem := d.githubCodespacesMenu(); githubItem != nil {
+		items = append(items, githubItem)
 	}
-
-	// Recent targets from history (de-duplicated against default).
-	hist := history.Load()
-	if len(hist.Entries) > 0 {
-		items = append(items, fyne.NewMenuItemSeparator())
-		limit := min(5, len(hist.Entries))
-		for i := len(hist.Entries) - 1; i >= len(hist.Entries)-limit; i-- {
-			entry := hist.Entries[i]
-			if seen[entry.Repository] {
-				continue
-			}
-			seen[entry.Repository] = true
-
-			targetName := d.targetNameForRepo(entry.Repository)
-			label := entry.Repository
-			args := targetName
-			if args == "" {
-				args = entry.Repository
-			}
-			item := fyne.NewMenuItem(label, func() {
-				go d.showGUI(args)
-			})
-			if sub := d.codespaceSubmenu(entry.Repository, args); sub != nil {
-				item.ChildMenu = sub
-			}
-			items = append(items, item)
-		}
+	if coderItem := d.coderWorkspaceMenu(); coderItem != nil {
+		items = append(items, coderItem)
 	}
 
 	// Open previous / launch.
-	items = append(items, fyne.NewMenuItemSeparator())
+	hist := history.Load()
+	if len(items) > 0 {
+		items = append(items, fyne.NewMenuItemSeparator())
+	}
 	if len(hist.Entries) > 0 {
 		items = append(items, fyne.NewMenuItem("Open previous", func() {
 			go d.hotkeyActionPrevious()
@@ -90,6 +52,65 @@ func (d *Daemon) buildTrayMenu() *fyne.Menu {
 	}))
 
 	return fyne.NewMenu("cosmonaut", items...)
+}
+
+func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
+	all := d.Codespaces()
+	if len(all) == 0 {
+		return nil
+	}
+
+	repos := codespace.UniqueRepos(all)
+	hist := history.Load()
+	repos = hist.SortRepos(repos)
+
+	items := make([]*fyne.MenuItem, 0, len(repos))
+	for _, repo := range repos {
+		repo := repo
+		args := d.targetNameForRepo(repo)
+		if args == "" {
+			args = repo
+		}
+		item := fyne.NewMenuItem(repo, func() {
+			go d.showGUI(args)
+		})
+		if sub := d.codespaceSubmenu(repo, args); sub != nil {
+			item.ChildMenu = sub
+		}
+		items = append(items, item)
+	}
+
+	root := fyne.NewMenuItem("Codespaces", nil)
+	root.ChildMenu = fyne.NewMenu("", items...)
+	return root
+}
+
+func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {
+	workspaces := filterWorkspacesByProvider(d.Workspaces(), provider.NameCoder)
+	if len(workspaces) == 0 {
+		return nil
+	}
+
+	sort.Slice(workspaces, func(i, j int) bool {
+		oi, oj := stateOrder(workspaces[i].State), stateOrder(workspaces[j].State)
+		if oi != oj {
+			return oi < oj
+		}
+		return workspaceLabel(workspaces[i]) < workspaceLabel(workspaces[j])
+	})
+
+	items := make([]*fyne.MenuItem, 0, len(workspaces))
+	for _, ws := range workspaces {
+		ws := ws
+		label := fmt.Sprintf("%s %s", stateIcon(ws.State), ws.Name)
+		items = append(items, fyne.NewMenuItem(label, func() {
+			_, resolvedName := guiTargetForCoderWorkspace(d.Cfg, ws)
+			go d.showGUI("--workspace", ws.Name, "--provider", provider.NameCoder, resolvedName)
+		}))
+	}
+	item := fyne.NewMenuItem("Coder", nil)
+	item.ChildMenu = fyne.NewMenu("", items...)
+	return item
 }
 
 // codespaceSubmenu builds a submenu showing codespaces for a repo.
@@ -115,7 +136,7 @@ func (d *Daemon) codespaceSubmenu(repo, launchArgs string) *fyne.Menu {
 	for _, cs := range repoCS[:limit] {
 		label := fmt.Sprintf("%s %s", stateIcon(cs.State), csLabel(cs))
 		item := fyne.NewMenuItem(label, func() {
-			go d.showGUI("--codespace", cs.Name, launchArgs)
+			go d.showGUI("--workspace", cs.Name, "--provider", "github", launchArgs)
 		})
 		item.ChildMenu = d.codespaceActionsMenu(cs, launchArgs)
 		items = append(items, item)
@@ -134,7 +155,7 @@ func (d *Daemon) codespaceSubmenu(repo, launchArgs string) *fyne.Menu {
 func (d *Daemon) codespaceActionsMenu(cs codespace.Codespace, launchArgs string) *fyne.Menu {
 	items := []*fyne.MenuItem{
 		fyne.NewMenuItem("Open in editor", func() {
-			go d.showGUI("--codespace", cs.Name, launchArgs)
+			go d.showGUI("--workspace", cs.Name, "--provider", "github", launchArgs)
 		}),
 		fyne.NewMenuItem("Refresh ports", func() {
 			d.refreshPortsAsync(cs.Name, nil)
@@ -204,11 +225,11 @@ func disabledMenuItem(label string) *fyne.MenuItem {
 // stateOrder returns a sort key for codespace states (lower = first).
 func stateOrder(state string) int {
 	switch state {
-	case "Available":
+	case "Available", "Started", "ready", "running", "connected":
 		return 0
-	case "Starting":
+	case "Starting", "starting", "pending":
 		return 1
-	case "Stopped":
+	case "Stopped", "stopped":
 		return 2
 	default:
 		return 3
@@ -218,9 +239,9 @@ func stateOrder(state string) int {
 // stateIcon returns a Unicode indicator for a codespace state.
 func stateIcon(state string) string {
 	switch state {
-	case "Available":
+	case "Available", "Started", "ready", "running", "connected":
 		return "●"
-	case "Starting":
+	case "Starting", "starting", "pending":
 		return "◐"
 	default:
 		return "○"

@@ -72,10 +72,17 @@ const (
 // `gh codespace list` attempt; the daemon supplies its cached value, the
 // CLI runs a fresh list at call time.
 func Catalog(listErr func() error) []Check {
-	return []Check{
-		ghCodespaceScopeCheck(listErr),
+	return CatalogForProvider("github", listErr)
+}
+
+func CatalogForProvider(providerName string, listErr func() error) []Check {
+	checks := []Check{
 		sshHostStarCheck(),
 	}
+	if providerName == "github" {
+		checks = append([]Check{ghCodespaceScopeCheck(listErr)}, checks...)
+	}
+	return checks
 }
 
 // FindByID returns the check with the given ID, or nil.

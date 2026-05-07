@@ -11,8 +11,17 @@ The default path is `cosmonaut.config.json` in the current directory for the CLI
   // Default target to use when no target name is given.
   "defaultTarget": "work",
 
+  // Global workspace provider: "github" (default) or "coder".
+  "workspaceProvider": "coder",
+
   // Editor to launch: "zed" (default) or "neovim".
   "editor": "zed",
+
+  "providers": {
+    "coder": {
+      "organization": "coder"
+    }
+  },
 
   // Applet settings (menu bar icon, hotkey, codespace lifecycle).
   "daemon": {
@@ -23,11 +32,15 @@ The default path is `cosmonaut.config.json` in the current directory for the CLI
 
   "targets": {
     "work": {
-      "repository": "my-org/my-repo",
-      "branch": "main",
       "workspacePath": "/workspaces/my-repo",
-      "machine": "standardLinux32gb",
-      "preWarm": "08:00"
+      "coder": {
+        "template": "nomad-devcontainer",
+        "workspaceName": "my-repo",
+        "parameters": {
+          "repo": "my-org/my-repo"
+        },
+        "stopAfter": "8h"
+      }
     }
   }
 }
@@ -38,7 +51,9 @@ The default path is `cosmonaut.config.json` in the current directory for the CLI
 | Field | Type | Description |
 |---|---|---|
 | `defaultTarget` | string | Target name to use when no target is passed on the CLI |
+| `workspaceProvider` | string | `github` (default) or `coder` |
 | `editor` | string | `zed` (default) or `neovim`; overridden by `--editor` |
+| `providers` | object | Provider-specific defaults such as `providers.coder.organization` |
 | `targets` | object | Map of target name to target definition |
 | `daemon` | object | Applet settings (see [Daemon fields](#daemon-fields)) |
 
@@ -46,7 +61,7 @@ The default path is `cosmonaut.config.json` in the current directory for the CLI
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `repository` | string | yes | GitHub repository in `owner/repo` form |
+| `repository` | string | | GitHub repository in `owner/repo` form; optional for Coder targets |
 | `branch` | string | | Preferred branch when creating or matching a codespace |
 | `displayName` | string | | Exact display name to disambiguate codespace matches |
 | `codespaceName` | string | | Exact codespace name for strict reuse |
@@ -60,6 +75,7 @@ The default path is `cosmonaut.config.json` in the current directory for the CLI
 | `zedNickname` | string | | Friendly name in Zed's remote project list |
 | `autoStop` | string | | Reserved for a future auto-stop feature; currently parsed but not acted on |
 | `preWarm` | string | | Time-of-day to pre-warm codespace (applet only, e.g. `08:00`) |
+| `coder` | object | | Coder-specific target settings: `template`, `workspaceName`, `parameters`, `stopAfter`, `organization` |
 
 ## Daemon fields
 

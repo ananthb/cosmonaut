@@ -12,6 +12,7 @@ import (
 )
 
 const SSHIncludeLine = "Include ~/.ssh/cosmonaut/*.conf"
+const coderConfigFile = "coder.conf"
 
 // HostStarScopedLine is the form a bare `Host *` is rewritten to when the
 // user accepts the scoping fix. The negation patterns prevent the
@@ -23,7 +24,7 @@ const HostStarScopedLine = "Host * !cs-* !cs.*"
 // one-shot backup written before ScopeHostStarBlocks first modifies it.
 const MainConfigBackupSuffix = ".cosmonaut.bak"
 
-var hostAliasRe = regexp.MustCompile(`(?m)^\s*Host\s+([^\s*][^\s]*)\s*$`)
+var hostAliasRe = regexp.MustCompile(`(?m)^\s*Host\s+([^\s]+)\s*$`)
 
 // hostStarLineRe matches lines that are exactly `Host *` (case-insensitive,
 // any leading whitespace, any trailing whitespace). More complex patterns
@@ -33,11 +34,17 @@ var hostStarLineRe = regexp.MustCompile(`(?im)^([ \t]*)Host[ \t]+\*[ \t]*$`)
 
 // ParsePrimaryHostAlias extracts the first concrete Host entry from SSH config text.
 func ParsePrimaryHostAlias(sshConfig string) (string, error) {
-	match := hostAliasRe.FindStringSubmatch(sshConfig)
-	if match == nil {
-		return "", fmt.Errorf("could not find a concrete Host entry in gh codespace ssh --config output")
+	matches := hostAliasRe.FindAllStringSubmatch(sshConfig, -1)
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		alias := match[1]
+		if isConcreteHostAlias(alias) {
+			return alias, nil
+		}
 	}
-	return match[1], nil
+	return "", fmt.Errorf("could not find a concrete Host entry in SSH config output")
 }
 
 // EnsureIncludeLine ensures the SSH include line is at the top of the config.
@@ -77,6 +84,16 @@ func (p SSHPaths) CodespaceConfigPath(codespaceName string) string {
 	return filepath.Join(p.IncludeDir, codespaceName+".conf")
 }
 
+func (p SSHPaths) WorkspaceConfigPath(provider, workspaceName string) string {
+	if provider == "coder" {
+		return filepath.Join(p.IncludeDir, coderConfigFile)
+	}
+	if provider == "github" || provider == "" {
+		return filepath.Join(p.IncludeDir, workspaceName+".conf")
+	}
+	return filepath.Join(p.IncludeDir, provider+"-"+workspaceName+".conf")
+}
+
 // EnsureConfigIncludesGenerated ensures the main SSH config includes the generated configs.
 func EnsureConfigIncludesGenerated(mainConfigPath string) error {
 	current, err := os.ReadFile(mainConfigPath)
@@ -95,6 +112,10 @@ func EnsureConfigIncludesGenerated(mainConfigPath string) error {
 		return err
 	}
 	return os.WriteFile(mainConfigPath, []byte(updated), 0644)
+}
+
+func EnsureMainConfigIncludesGenerated(mainConfigPath string) error {
+	return EnsureConfigIncludesGenerated(mainConfigPath)
 }
 
 // NeedsHostStarScoping reports whether mainConfigPath contains any bare
@@ -153,6 +174,29 @@ func ReadExistingAlias(includeDir, codespaceName string) (string, bool) {
 		return "", false
 	}
 	return alias, true
+}
+
+func ReadExistingWorkspaceAlias(paths SSHPaths, provider, workspaceName string) (string, bool) {
+	path := paths.WorkspaceConfigPath(provider, workspaceName)
+	if provider == "coder" {
+		if _, err := os.Stat(path); err != nil {
+			return "", false
+		}
+		return workspaceName + ".coder", true
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	alias, err := ParsePrimaryHostAlias(string(data))
+	if err != nil {
+		return "", false
+	}
+	return alias, true
+}
+
+func isConcreteHostAlias(alias string) bool {
+	return alias != "" && !strings.ContainsAny(alias, "*!?")
 }
 
 // managedExtrasVersion is bumped whenever managedExtrasBody changes, so
@@ -252,6 +296,25 @@ func WriteCodespaceConfig(includeDir, codespaceName, content string) error {
 	content = applyManagedExtras(content)
 	path := filepath.Join(includeDir, codespaceName+".conf")
 	return os.WriteFile(path, []byte(content), 0644)
+}
+
+func WriteWorkspaceConfig(includeDir, provider, workspaceName, content string) error {
+	if err := os.MkdirAll(includeDir, 0700); err != nil {
+		return err
+	}
+	content = applyManagedExtras(content)
+	path := SSHPaths{IncludeDir: includeDir}.WorkspaceConfigPath(provider, workspaceName)
+	return os.WriteFile(path, []byte(content), 0644)
+}
+
+func EnsureWorkspaceConfig(paths SSHPaths, provider, workspaceName, content string) error {
+	if err := os.MkdirAll(paths.IncludeDir, 0700); err != nil {
+		return err
+	}
+	if err := EnsureConfigIncludesGenerated(paths.MainConfigPath); err != nil {
+		return err
+	}
+	return WriteWorkspaceConfig(paths.IncludeDir, provider, workspaceName, content)
 }
 
 // RefreshManagedExtras rewrites the managed block in path to the current
