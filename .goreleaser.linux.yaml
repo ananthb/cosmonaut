@@ -1,0 +1,61 @@
+# goreleaser config — Linux half of the release. The macOS half is in
+# .goreleaser.darwin.yaml; the two configs deliberately don't share via
+# `includes:` so each runner can be invoked independently.
+#
+# Cosign signing and SHA256SUMS generation happen in the workflow's
+# publish job (which sees all artifacts at once), so this config sets
+# checksum.disable: true and has no signs block.
+version: 2
+project_name: cosmonaut
+
+dist: build
+
+before:
+  hooks:
+    - bash scripts/render-version-files.sh "{{ .Version }}"
+
+builds:
+  - id: cosmonaut
+    main: .
+    binary: cosmonaut
+    env:
+      - CGO_ENABLED=1
+    flags:
+      - -trimpath
+    tags:
+      - netgo
+    ldflags:
+      - -s
+      - -w
+      - -X main.version={{.Version}}
+    goos:
+      - linux
+    goarch:
+      - amd64
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  - id: tarball
+    ids:
+      - cosmonaut
+    formats:
+      - tar.gz
+    # Preserve existing artifact URL: cosmonaut-amd64.tar.gz (no version,
+    # no `linux` suffix — matches what the previous nix-build pipeline
+    # produced and what install scripts may have pinned).
+    name_template: 'cosmonaut-{{ .Arch }}'
+    wrap_in_directory: cosmonaut
+    files:
+      - src: dist/cosmonaut.config.example.json
+        dst: cosmonaut.config.example.json
+      - src: dist/cosmonaut.service
+        dst: cosmonaut.service
+
+checksum:
+  disable: true
+
+snapshot:
+  version_template: '{{ incpatch .Version }}-snapshot'
+
+release:
+  disable: true

@@ -17,6 +17,20 @@
   };
 
   outputs = { self, nixpkgs, flake-utils, nix-appimage }:
+    let
+      # Pinned release for the prebuilt-fetch package. Bumped by
+      # scripts/bump-flake-version.sh after each goreleaser release.
+      # Placeholder hashes make `nix build .#cosmonaut-prebuilt` fail
+      # with a clear "hash mismatch" error until the script has run
+      # against a real release.
+      release = {
+        owner = "linuskendall";
+        repo = "cosmonaut";
+        tag = "v0.0.0-placeholder";
+        linuxSha = "0000000000000000000000000000000000000000000000000000";
+        darwinSha = "0000000000000000000000000000000000000000000000000000";
+      };
+    in
     {
       homeManagerModules.default = import ./modules/home-manager.nix self;
       homeManagerModules.cosmonaut = import ./modules/home-manager.nix self;
@@ -28,23 +42,24 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        cosmonaut = pkgs.buildGoModule {
+        # cosmonautFromSource is the hermetic build used as input to
+        # the AppImage and as the home-manager default package binding.
+        # The user-facing release tarball + DMG come from goreleaser
+        # (see .goreleaser.{linux,darwin}.yaml). Once a goreleaser
+        # release is pinned in `release` above, home-manager users can
+        # opt into `packages.cosmonaut-prebuilt` instead.
+        cosmonautFromSource = pkgs.buildGoModule {
           pname = "cosmonaut";
-          version = "0.8.0";
+          # Not a user-facing version — this derivation only feeds the
+          # AppImage and serves as the home-manager default until users
+          # opt into cosmonautPrebuilt. The released version comes from
+          # the git tag via goreleaser's `-X main.version` ldflag.
+          version = "unstable";
           src = ./.;
 
           vendorHash = "sha256-Hc22uW6Eq1tY567WipjS8GCPWNJcT9Db5Wpovs/MAdU=";
 
           env.CGO_ENABLED = 1;
-
-          # netgo selects the pure-Go DNS resolver. CGO stays on for Fyne
-          # (Cocoa/OpenGL via -framework, no dylib path embedding). On
-          # darwin this does NOT drop the libresolv dylib link — Go
-          # stdlib's internal/syscall/unix/net_darwin.go emits
-          # //go:cgo_ldflag "-lresolv" unconditionally, so the linker
-          # bakes nixpkgs's libresolv path into LC_LOAD_DYLIB regardless.
-          # The DMG build in .github/workflows/release.yml rewrites that
-          # load command to /usr/lib/libresolv.9.dylib via install_name_tool.
           tags = [ "netgo" ];
 
           nativeBuildInputs = [
@@ -54,6 +69,17 @@
           ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
             pkgs.xvfb-run
           ];
+
+          # On Linux, golang.design/x/hotkey's init() calls XOpenDisplay
+          # and panics with no DISPLAY, so any package that imports it
+          # (internal/daemon) cannot even load its test binary in the
+          # nix sandbox. Wrap go test in xvfb-run to provide a display.
+          checkPhase = ''
+            runHook preCheck
+            export GOFLAGS=''${GOFLAGS//-trimpath/}
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux "xvfb-run -a "}go test -tags=netgo ./...
+            runHook postCheck
+          '';
 
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.apple-sdk
@@ -100,12 +126,6 @@
             mkdir -p "$out/Applications/Cosmonaut.app/Contents/Resources"
             cp $src/dist/Info.plist "$out/Applications/Cosmonaut.app/Contents/Info.plist"
             cp $src/assets/logo.icns "$out/Applications/Cosmonaut.app/Contents/Resources/icon.icns"
-            # Copy the real Go binary (not the nix wrapper) into the app
-            # bundle. The wrapper does exec -a which replaces the process
-            # name with .cosmonaut-wrapped, breaking macOS bundle
-            # identity (dock icon, app name). The Go binary's enrichPath()
-            # discovers gh via the user's login shell PATH, so the nix
-            # wrapper's PATH injection is not needed here.
             cp $out/bin/.cosmonaut-wrapped "$out/Applications/Cosmonaut.app/Contents/MacOS/cosmonaut"
           '';
 
@@ -115,45 +135,113 @@
             mainProgram = "cosmonaut";
           };
         };
+
+        # cosmonautPrebuilt fetches the goreleaser-built archive for
+        # the host system and rewires it to nixpkgs runtime libs
+        # (autoPatchelfHook on Linux; macOS binaries are already
+        # self-contained against /usr/lib/* and /System/*). Opt-in via
+        # `packages.cosmonaut-prebuilt`. Becomes a candidate for the
+        # default once `release` above points at a real release.
+        cosmonautPrebuilt = pkgs.stdenvNoCC.mkDerivation rec {
+          pname = "cosmonaut-prebuilt";
+          version = pkgs.lib.removePrefix "v" release.tag;
+
+          src =
+            if pkgs.stdenv.isLinux then
+              pkgs.fetchurl {
+                url = "https://github.com/${release.owner}/${release.repo}/releases/download/${release.tag}/cosmonaut-amd64.tar.gz";
+                sha256 = release.linuxSha;
+              }
+            else
+              pkgs.fetchurl {
+                url = "https://github.com/${release.owner}/${release.repo}/releases/download/${release.tag}/cosmonaut-macos-arm64.tar.gz";
+                sha256 = release.darwinSha;
+              };
+
+          nativeBuildInputs = [
+            pkgs.makeWrapper
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.autoPatchelfHook
+          ];
+
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.gtk3
+            pkgs.libappindicator-gtk3
+            pkgs.libGL
+            pkgs.xorg.libX11
+            pkgs.xorg.libXcursor
+            pkgs.xorg.libXi
+            pkgs.xorg.libXinerama
+            pkgs.xorg.libXrandr
+            pkgs.xorg.libXxf86vm
+            pkgs.xorg.libXext
+            pkgs.xorg.libXfixes
+          ];
+
+          dontBuild = true;
+
+          installPhase =
+            if pkgs.stdenv.isLinux then ''
+              runHook preInstall
+              install -Dm755 cosmonaut/cosmonaut $out/bin/cosmonaut
+              install -Dm644 cosmonaut/cosmonaut.config.example.json \
+                $out/share/cosmonaut/cosmonaut.config.example.json
+              install -Dm644 cosmonaut/cosmonaut.service \
+                $out/share/cosmonaut/cosmonaut.service
+              wrapProgram $out/bin/cosmonaut \
+                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.gh ]}
+              runHook postInstall
+            '' else ''
+              runHook preInstall
+              # Goreleaser's macOS tarball ships Cosmonaut.app at the
+              # archive root. Mirror the nix layout home-manager expects
+              # ($out/Applications/Cosmonaut.app + $out/bin/cosmonaut
+              # symlink into the bundle) so its launchd config and
+              # ~/Applications/Cosmonaut.app activation keep working
+              # unchanged.
+              mkdir -p $out/Applications $out/bin
+              cp -R Cosmonaut.app $out/Applications/Cosmonaut.app
+              ln -s $out/Applications/Cosmonaut.app/Contents/MacOS/cosmonaut $out/bin/cosmonaut
+              runHook postInstall
+            '';
+
+          meta = with pkgs.lib; {
+            description = "Cosmonaut launcher (prebuilt from goreleaser release)";
+            homepage = "https://github.com/${release.owner}/${release.repo}";
+            license = licenses.mit;
+            mainProgram = "cosmonaut";
+            platforms = [ "x86_64-linux" "aarch64-darwin" ];
+          };
+        };
       in
       {
         packages = {
-          default = cosmonaut;
-          cosmonaut = cosmonaut;
+          # Default stays on the from-source build until a goreleaser
+          # release has been pinned in `release` above (via
+          # scripts/bump-flake-version.sh). Until then, opt-in users
+          # can `nix build .#cosmonaut-prebuilt` once the pin is real.
+          default = cosmonautFromSource;
+          cosmonaut = cosmonautFromSource;
         }
-        # Linux: release tarball + AppImage
+        # cosmonaut-prebuilt is only usable on systems where goreleaser
+        # publishes an artifact (x86_64-linux, aarch64-darwin). Skip on
+        # other systems rather than expose a derivation that fails
+        # platform checks at evaluation time.
+        // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-darwin") {
+          cosmonaut-prebuilt = cosmonautPrebuilt;
+        }
+        # Hermetic AppImage: bundles the entire nix closure as squashfs
+        # and mounts via user namespaces, so the binary's RUNPATH and
+        # interpreter resolve at runtime on any Linux box. Goreleaser
+        # attaches this to the GitHub release alongside its own
+        # tarball + DMG outputs.
         // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-          release =
-            let
-              pkg = cosmonaut;
-              arch = if system == "x86_64-linux" then "amd64" else "arm64";
-            in
-            pkgs.runCommand "cosmonaut-${arch}.tar.gz"
-              { nativeBuildInputs = [ pkgs.gzip ]; }
-              ''
-                # Ship the real Go binary (.cosmonaut-wrapped), not the nix
-                # wrapper at bin/cosmonaut: that wrapper hardcodes /nix/store
-                # paths and is unusable outside the build sandbox. Users need
-                # gh on their own PATH, same as any standalone distribution.
-                mkdir -p cosmonaut
-                cp ${pkg}/bin/.cosmonaut-wrapped cosmonaut/cosmonaut
-                chmod +w cosmonaut/cosmonaut
-                cp ${./dist/cosmonaut.config.example.json} cosmonaut/
-                cp ${./dist/cosmonaut.service} cosmonaut/
-                tar -czvf $out -C . cosmonaut
-              '';
-
           appimage = nix-appimage.lib.${system}.mkAppImage {
-            program = "${cosmonaut}/bin/.cosmonaut-wrapped";
+            program = "${cosmonautFromSource}/bin/.cosmonaut-wrapped";
             pname = "cosmonaut";
             name = "cosmonaut-${if system == "x86_64-linux" then "x86_64" else "aarch64"}.AppImage";
           };
         };
-
-        # The Darwin DMG is assembled by .github/workflows/release.yml
-        # from the default package, not via a dedicated flake output,
-        # so that the shipped binary is the raw .cosmonaut-wrapped file
-        # instead of a nix wrapper referencing /nix/store paths.
 
         devShells.default = pkgs.mkShell {
           packages = [
@@ -161,6 +249,14 @@
             pkgs.gopls
             pkgs.gh
             pkgs.pkg-config
+            # goreleaser drives the user-facing release pipeline
+            # (binary build, archives, DMG, signing, GitHub release).
+            # See .goreleaser.darwin.yaml / .goreleaser.linux.yaml.
+            pkgs.goreleaser
+            pkgs.cosign
+            # nix-prefetch-url is invoked by scripts/bump-flake-version.sh
+            # to recompute sha256 hashes after each goreleaser release.
+            pkgs.nix
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.apple-sdk
           ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
@@ -175,6 +271,10 @@
             pkgs.xorg.libXxf86vm
             pkgs.xorg.libXext
             pkgs.xorg.libXfixes
+            # `go test` over the daemon package needs a display because
+            # golang.design/x/hotkey opens an X11 connection in init().
+            # Run tests as: `xvfb-run -a go test ./...`
+            pkgs.xvfb-run
           ];
         };
       }

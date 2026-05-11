@@ -1,0 +1,65 @@
+# goreleaser config — macOS half of the release. The Linux half is in
+# .goreleaser.linux.yaml.
+#
+# The post-build hook scripts/post-build-darwin.sh assembles
+# Cosmonaut.app and produces both a DMG (cosmonaut-macos-arm64.dmg —
+# user-facing, browser download) and a tar.gz containing the .app
+# (cosmonaut-macos-arm64.tar.gz — consumed by the in-repo nix
+# prebuilt-fetch derivation, lands in PR 3).
+#
+# Goreleaser's own archive output (the raw binary tarball) is disabled
+# because we ship the .app-bearing tar.gz instead. Signing and
+# SHA256SUMS happen in the workflow's publish job.
+version: 2
+project_name: cosmonaut
+
+dist: build
+
+before:
+  hooks:
+    - bash scripts/render-version-files.sh "{{ .Version }}"
+
+builds:
+  - id: cosmonaut
+    main: .
+    binary: cosmonaut
+    env:
+      - CGO_ENABLED=1
+    flags:
+      - -trimpath
+    tags:
+      - netgo
+    ldflags:
+      - -s
+      - -w
+      - -X main.version={{.Version}}
+    goos:
+      - darwin
+    goarch:
+      - arm64
+    mod_timestamp: '{{ .CommitTimestamp }}'
+    hooks:
+      post:
+        - cmd: bash scripts/post-build-darwin.sh "{{ .Path }}" "{{ .Version }}"
+
+# scripts/post-build-darwin.sh produces the user-facing .dmg and the
+# .app-bearing .tar.gz directly into dist/ during the post-build hook.
+# Goreleaser's archive step is configured with format=binary so it
+# emits only the raw binary (no tar wrapper); the workflow upload step
+# only takes the canonical artifact names and skips this binary.
+archives:
+  - id: raw
+    ids:
+      - cosmonaut
+    formats:
+      - binary
+    name_template: 'cosmonaut-raw-{{ .Os }}-{{ .Arch }}'
+
+checksum:
+  disable: true
+
+snapshot:
+  version_template: '{{ incpatch .Version }}-snapshot'
+
+release:
+  disable: true

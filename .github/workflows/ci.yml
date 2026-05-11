@@ -23,26 +23,46 @@ jobs:
         run: nix build
 
       - name: Test
-        run: nix develop --command go test ./...
+        run: nix develop --command xvfb-run -a go test ./...
 
-  check-versions:
-    runs-on: ubuntu-latest
+  goreleaser-check:
+    name: goreleaser check + snapshot smoke test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            config: .goreleaser.linux.yaml
+          - os: macos-latest
+            config: .goreleaser.darwin.yaml
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Check version consistency
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
         run: |
-          flake_ver=$(grep -oP 'version = "\K[^"]+' flake.nix)
-          fyne_ver=$(grep -oP 'Version = "\K[^"]+' FyneApp.toml)
-          plist_ver=$(grep -oP '<string>\K[0-9]+\.[0-9]+\.[0-9]+' dist/Info.plist | head -1)
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev libappindicator3-dev libgl1-mesa-dev pkg-config \
+            libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev \
+            libxxf86vm-dev libxext-dev libxfixes-dev
 
-          echo "flake.nix:      $flake_ver"
-          echo "FyneApp.toml:   $fyne_ver"
-          echo "Info.plist:     $plist_ver"
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: check --config ${{ matrix.config }}
 
-          if [ "$flake_ver" != "$fyne_ver" ] || [ "$flake_ver" != "$plist_ver" ]; then
-            echo "::error::Version mismatch! All three files must have the same version."
-            exit 1
-          fi
-
-          echo "All versions match: $flake_ver"
+      - name: Snapshot build (smoke test)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: build --snapshot --single-target --clean --config ${{ matrix.config }}

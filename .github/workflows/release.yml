@@ -5,12 +5,24 @@ on:
     tags:
       - "v*"
 
+# Goreleaser drives the binary builds, archives, DMG, and the .app
+# bundle. nix-appimage stays as the AppImage source — it's hermetic
+# (squashfs + user namespaces) and there's no off-the-shelf
+# replacement that runs on any Linux box. The publish job aggregates
+# all artifacts, computes SHA256SUMS, cosign-signs everything, and
+# uploads the GitHub release.
+
 jobs:
   linux:
     name: Linux
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: DeterminateSystems/nix-installer-action@main
 
@@ -20,83 +32,67 @@ jobs:
           restore-prefixes-first-match: nix-${{ runner.os }}-
           gc-max-store-size-linux: 5G
 
-      - name: Build release tarball
-        run: |
-          nix build .#packages.x86_64-linux.release -o result-release
-          cp "$(readlink result-release)" dist-cosmonaut-amd64.tar.gz
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
-      - name: Build AppImage
+      - name: Install GTK / X11 build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev libappindicator3-dev libgl1-mesa-dev pkg-config \
+            libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev \
+            libxxf86vm-dev libxext-dev libxfixes-dev
+
+      - name: Build hermetic AppImage via nix-appimage
         run: |
           nix build .#packages.x86_64-linux.appimage -o result-appimage
-          cp "$(readlink result-appimage)" dist-cosmonaut-amd64.AppImage
+          mkdir -p build
+          cp -L result-appimage build/cosmonaut-amd64.AppImage
+          chmod +w build/cosmonaut-amd64.AppImage
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean --config .goreleaser.linux.yaml
 
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: dist-*
+          path: |
+            build/cosmonaut-amd64.tar.gz
+            build/cosmonaut-amd64.AppImage
+          if-no-files-found: error
 
   macos:
+    name: macOS
     runs-on: macos-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-
-      - uses: nix-community/cache-nix-action@v7
         with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-          gc-max-store-size-macos: 3G
+          fetch-depth: 0
 
-      - name: Build package
-        run: nix build .#packages.aarch64-darwin.default -o result
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
-      - name: Create DMG
-        run: |
-          # Ship the real Go binary (.cosmonaut-wrapped), not result/bin/cosmonaut,
-          # which is a nix shell wrapper that references /nix/store paths and will
-          # fail on end-user Macs. The Go binary's enrichPath() discovers gh via
-          # the user's login shell, so no wrapper is needed.
-          mkdir -p dmg-staging
-          cp result/bin/.cosmonaut-wrapped dmg-staging/cosmonaut
-          chmod +w dmg-staging/cosmonaut
-
-          # Go stdlib's internal/syscall/unix/net_darwin.go has a
-          # //go:cgo_ldflag "-lresolv" that fires regardless of the netgo
-          # build tag, so the linker bakes nixpkgs's libresolv dylib path
-          # into LC_LOAD_DYLIB. Rewrite it to the macOS system path, which
-          # dyld resolves from the shared cache on every Mac.
-          nix_resolv=$(otool -L dmg-staging/cosmonaut \
-            | awk '/\/nix\/store.*libresolv/ {print $1; exit}')
-          if [ -n "$nix_resolv" ]; then
-            install_name_tool -change "$nix_resolv" \
-              /usr/lib/libresolv.9.dylib dmg-staging/cosmonaut
-          fi
-
-          # Sanity-check: no LC_LOAD_DYLIB or LC_RPATH may reference
-          # /nix/store after the rewrite, or dyld will abort on end-user
-          # Macs. (String-table references — Go's tzdata/mailcap/iana
-          # fallback paths — are runtime probes that fail open, so we
-          # don't gate on them.)
-          if otool -L dmg-staging/cosmonaut | grep -q '/nix/store'; then
-            echo "ERROR: binary references /nix/store dylibs:" >&2
-            otool -L dmg-staging/cosmonaut | grep '/nix/store' >&2
-            exit 1
-          fi
-          if otool -l dmg-staging/cosmonaut | grep -A2 LC_RPATH \
-              | grep -q '/nix/store'; then
-            echo "ERROR: binary has /nix/store in LC_RPATH:" >&2
-            otool -l dmg-staging/cosmonaut | grep -A2 LC_RPATH >&2
-            exit 1
-          fi
-
-          cp dist/cosmonaut.config.example.json dmg-staging/
-          hdiutil create -volname "cosmonaut" -srcfolder dmg-staging \
-            -ov -format UDZO dist-cosmonaut-macos-arm64.dmg
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean --config .goreleaser.darwin.yaml
 
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: dist-*
+          path: |
+            build/cosmonaut-macos-arm64.dmg
+            build/cosmonaut-macos-arm64.tar.gz
+          if-no-files-found: error
 
   release:
     name: Create Release
@@ -113,16 +109,9 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Rename artifacts
-        run: |
-          cd artifacts
-          for f in dist-*; do
-            mv "$f" "${f#dist-}"
-          done
-
       - name: Generate checksums and sign
+        working-directory: artifacts
         run: |
-          cd artifacts
           sha256sum $(ls -1 | grep -v '\.sig$\|\.pem$\|SHA256SUMS') > SHA256SUMS
           for f in *; do
             cosign sign-blob --yes \

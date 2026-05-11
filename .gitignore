@@ -2,3 +2,5 @@ cosmonaut
 result
 .direnv
 vendor/
+# goreleaser working directory (`dist:` field in .goreleaser.*.yaml)
+build/

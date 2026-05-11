@@ -38,28 +38,39 @@ This writes `dist/cosmonaut-darwin-arm64` and
 Linux-to-macOS builds require Apple's macOS SDK and a Darwin-capable linker
 because the app uses Fyne/CGO. Plain `GOOS=darwin` builds are not sufficient.
 
-## Version bumps
-
-The version number is specified in **three** places. All must be updated together:
-
-| File | Field | Example |
-|---|---|---|
-| `flake.nix` | `version` | `version = "0.6.0";` |
-| `dist/Info.plist` | `CFBundleShortVersionString` | `<string>0.6.0</string>` |
-| `FyneApp.toml` | `Version` | `Version = "0.6.0"` |
-
-The Nix Home Manager module in `modules/home-manager.nix` also duplicates some daemon config defaults (like the hotkey) for documentation purposes. If you change a default in the Go code, update the Nix module default to match.
-
 ## Releasing a new version
 
-1. Bump the version in all three files listed above.
-2. Commit and push to `main`.
-3. Create an annotated tag and push it:
-   ```bash
-   git tag -a v0.7.0 -m "v0.7.0"
-   git push origin v0.7.0
-   ```
-4. The [release workflow](https://github.com/linuskendall/cosmonaut/blob/main/.github/workflows/release.yml) runs automatically on tag push. It builds Linux (tarball + AppImage) and macOS (DMG) artifacts, generates checksums, signs them with cosign, and creates a GitHub release.
+The git tag is the single source of truth for the release version. The CI workflow renders it into `FyneApp.toml` and `dist/Info.plist` on the runner via [`scripts/render-version-files.sh`](https://github.com/linuskendall/cosmonaut/blob/main/scripts/render-version-files.sh) — the committed values of those files are cosmetic and may drift behind the latest tag.
+
+```bash
+git tag -a v0.9.0 -m "v0.9.0"
+git push origin v0.9.0
+```
+
+The [release workflow](https://github.com/linuskendall/cosmonaut/blob/main/.github/workflows/release.yml) runs automatically on tag push. It:
+
+1. Builds the hermetic Linux AppImage via [nix-appimage](https://github.com/ralismark/nix-appimage) (squashfs + user namespaces — runs on any Linux box).
+2. Builds the Linux tarball and the macOS DMG + `.app`-bearing tar.gz via [goreleaser](https://goreleaser.com/) (see `.goreleaser.linux.yaml` / `.goreleaser.darwin.yaml`). The macOS post-build hook in [`scripts/post-build-darwin.sh`](https://github.com/linuskendall/cosmonaut/blob/main/scripts/post-build-darwin.sh) assembles `Cosmonaut.app`, ad-hoc codesigns, and asserts the binary references only system dylibs (no `/nix/store` or homebrew leaks).
+3. Computes `SHA256SUMS`, [cosign](https://docs.sigstore.dev/)-signs every artifact (keyless, GitHub OIDC), and uploads the GitHub release.
+
+Notarization is intentionally out of scope. The DMG is ad-hoc codesigned, so users still run `xattr -d com.apple.quarantine` after copying `Cosmonaut.app` to `/Applications`.
+
+### Bump the prebuilt-fetch nix package
+
+After the release workflow has published the artifacts, point the flake's `cosmonaut-prebuilt` package at the new tag:
+
+```bash
+nix develop --command scripts/bump-flake-version.sh
+git add flake.nix
+git commit -m 'bump cosmonaut-prebuilt to v0.9.0'
+git push origin main
+```
+
+The script reads the latest GitHub release, computes `nix-prefetch-url` sha256s for `cosmonaut-amd64.tar.gz` and `cosmonaut-macos-arm64.tar.gz`, and rewrites the `release = { ... }` block at the top of `flake.nix`. Until you run it, `nix build .#cosmonaut-prebuilt` fails with a clear hash-mismatch error — placeholder hashes ship in the flake by default so an unbumped flake never produces a working-but-stale binary.
+
+### Home-manager module drift
+
+The Nix Home Manager module in `modules/home-manager.nix` duplicates some daemon config defaults (like the hotkey) for documentation purposes. If you change a default in the Go code, update the Nix module default to match. This is a manual check — there's no CI job that asserts it.
 
 ## Updating documentation
 
