@@ -10,9 +10,9 @@ import (
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 
-	"github.com/linuskendall/cosmonaut/internal/codespace"
 	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/history"
+	"github.com/linuskendall/cosmonaut/internal/provider"
 )
 
 const (
@@ -29,10 +29,11 @@ type unifiedWindow struct {
 	tree    *widget.Tree
 
 	// Data for the tree.
-	allRepos    []string
-	recentCount int
-	filter      string
-	filtered    []string // repos matching current filter
+	allRepos     []string
+	recentCount  int
+	filter       string
+	filtered     []string // repos matching current filter
+	coderTargets []string
 }
 
 func (d *Daemon) newUnifiedWindow() *unifiedWindow {
@@ -51,7 +52,7 @@ func (d *Daemon) newUnifiedWindow() *unifiedWindow {
 
 	// Fetch all user repos in background.
 	go func() {
-		allUserRepos, err := codespace.ListAllRepos(d.Runner)
+		allUserRepos, err := provider.NewGitHubManager(d.Runner).ListRepositories()
 		if err != nil {
 			log.Printf("gui: fetch repos: %v", err)
 			return
@@ -92,12 +93,13 @@ func (d *Daemon) newUnifiedWindow() *unifiedWindow {
 }
 
 func (uw *unifiedWindow) loadRepos() {
-	repos := codespace.UniqueRepos(uw.daemon.Codespaces())
+	repos := provider.UniqueRepos(filterWorkspacesByProvider(uw.daemon.Workspaces(), provider.NameGitHub))
 	repos = mergeRepos(repos, configRepos(uw.daemon.Cfg))
 	hist := history.Load()
 	sorted := hist.SortRepos(repos)
 	uw.recentCount = countRecentRepos(sorted, hist)
 	uw.allRepos = sorted
+	uw.coderTargets = configuredCoderTargets(uw.daemon.Cfg)
 	uw.applyFilter()
 }
 
@@ -122,69 +124,95 @@ func (uw *unifiedWindow) setContent(obj fyne.CanvasObject) {
 }
 
 // --- Tree node ID scheme ---
-// "repo:<owner/name>": branch node for a repo
-// "cs:<codespace-name>:<owner/name>": leaf node for a codespace
-// "new:<owner/name>": leaf node for "create new"
+// "section:<provider>": branch node for a provider section
+// "repo:<owner/name>": branch node for a GitHub repo
+// "ws:<provider>:<name>": leaf node for a workspace
+// "new:<provider>:<context>": leaf node for "create new"
 
 const (
-	repoPrefix = "repo:"
-	csPrefix   = "cs:"
-	newPrefix  = "new:"
+	sectionPrefix = "section:"
+	repoPrefix    = "repo:"
+	wsPrefix      = "ws:"
+	newPrefix     = "new:"
 )
 
-func repoNodeID(repo string) widget.TreeNodeID  { return repoPrefix + repo }
-func csNodeID(cs, repo string) widget.TreeNodeID { return csPrefix + cs + ":" + repo }
-func newNodeID(repo string) widget.TreeNodeID    { return newPrefix + repo }
-func isRepoNode(id widget.TreeNodeID) bool       { return strings.HasPrefix(id, repoPrefix) }
-func isCsNode(id widget.TreeNodeID) bool         { return strings.HasPrefix(id, csPrefix) }
-func isNewNode(id widget.TreeNodeID) bool        { return strings.HasPrefix(id, newPrefix) }
-func repoFromNode(id widget.TreeNodeID) string   { return strings.TrimPrefix(id, repoPrefix) }
+func sectionNodeID(providerName string) widget.TreeNodeID { return sectionPrefix + providerName }
+func repoNodeID(repo string) widget.TreeNodeID            { return repoPrefix + repo }
+func workspaceNodeID(providerName, name string) widget.TreeNodeID {
+	return wsPrefix + providerName + ":" + name
+}
+func newNodeID(providerName, context string) widget.TreeNodeID {
+	return newPrefix + providerName + ":" + context
+}
+func isSectionNode(id widget.TreeNodeID) bool     { return strings.HasPrefix(id, sectionPrefix) }
+func isRepoNode(id widget.TreeNodeID) bool        { return strings.HasPrefix(id, repoPrefix) }
+func isWorkspaceNode(id widget.TreeNodeID) bool   { return strings.HasPrefix(id, wsPrefix) }
+func isNewNode(id widget.TreeNodeID) bool         { return strings.HasPrefix(id, newPrefix) }
+func sectionFromNode(id widget.TreeNodeID) string { return strings.TrimPrefix(id, sectionPrefix) }
+func repoFromNode(id widget.TreeNodeID) string    { return strings.TrimPrefix(id, repoPrefix) }
 
-func csNameFromNode(id widget.TreeNodeID) string {
-	s := strings.TrimPrefix(id, csPrefix)
-	if i := strings.LastIndex(s, ":"); i >= 0 {
-		return s[:i]
+func providerAndNameFromWorkspaceNode(id widget.TreeNodeID) (string, string) {
+	s := strings.TrimPrefix(id, wsPrefix)
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) != 2 {
+		return "", s
 	}
-	return s
+	return parts[0], parts[1]
 }
 
-func repoFromCsNode(id widget.TreeNodeID) string {
-	s := strings.TrimPrefix(id, csPrefix)
-	if i := strings.LastIndex(s, ":"); i >= 0 {
-		return s[i+1:]
+func providerAndContextFromNewNode(id widget.TreeNodeID) (string, string) {
+	s := strings.TrimPrefix(id, newPrefix)
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) != 2 {
+		return "", s
 	}
-	return ""
+	return parts[0], parts[1]
 }
-
-func repoFromNewNode(id widget.TreeNodeID) string { return strings.TrimPrefix(id, newPrefix) }
 
 func (uw *unifiedWindow) buildTree() *widget.Tree {
 	t := widget.NewTree(
 		// childUIDs
 		func(id widget.TreeNodeID) []widget.TreeNodeID {
 			if id == "" {
-				ids := make([]widget.TreeNodeID, len(uw.filtered))
-				for i, repo := range uw.filtered {
-					ids[i] = repoNodeID(repo)
+				return []widget.TreeNodeID{sectionNodeID(provider.NameGitHub), sectionNodeID(provider.NameCoder)}
+			}
+			if isSectionNode(id) {
+				switch sectionFromNode(id) {
+				case provider.NameGitHub:
+					ids := make([]widget.TreeNodeID, len(uw.filtered))
+					for i, repo := range uw.filtered {
+						ids[i] = repoNodeID(repo)
+					}
+					return ids
+				case provider.NameCoder:
+					workspaces := filterWorkspacesByProvider(uw.daemon.Workspaces(), provider.NameCoder)
+					ids := make([]widget.TreeNodeID, 0, len(workspaces)+1)
+					for _, ws := range workspaces {
+						if uw.filter != "" && !workspaceMatchesFilter(ws, uw.filter) {
+							continue
+						}
+						ids = append(ids, workspaceNodeID(ws.Provider, ws.Name))
+					}
+					ids = append(ids, newNodeID(provider.NameCoder, ""))
+					return ids
 				}
-				return ids
 			}
 			if isRepoNode(id) {
 				repo := repoFromNode(id)
-				all := uw.daemon.Codespaces()
-				repoCS := codespace.FilterByRepo(all, repo)
-				ids := make([]widget.TreeNodeID, 0, len(repoCS)+1)
-				for _, cs := range repoCS {
-					ids = append(ids, csNodeID(cs.Name, repo))
+				all := filterWorkspacesByProvider(uw.daemon.Workspaces(), provider.NameGitHub)
+				repoWS := provider.FilterByRepo(all, repo)
+				ids := make([]widget.TreeNodeID, 0, len(repoWS)+1)
+				for _, ws := range repoWS {
+					ids = append(ids, workspaceNodeID(ws.Provider, ws.Name))
 				}
-				ids = append(ids, newNodeID(repo))
+				ids = append(ids, newNodeID(provider.NameGitHub, repo))
 				return ids
 			}
 			return nil
 		},
 		// isBranch
 		func(id widget.TreeNodeID) bool {
-			return id == "" || isRepoNode(id)
+			return id == "" || isSectionNode(id) || isRepoNode(id)
 		},
 		// create
 		func(branch bool) fyne.CanvasObject {
@@ -193,25 +221,38 @@ func (uw *unifiedWindow) buildTree() *widget.Tree {
 		// update
 		func(id widget.TreeNodeID, branch bool, obj fyne.CanvasObject) {
 			label := obj.(*widget.Label)
-			if isRepoNode(id) {
+			switch {
+			case isSectionNode(id):
+				switch sectionFromNode(id) {
+				case provider.NameGitHub:
+					label.SetText("GitHub Codespaces")
+				case provider.NameCoder:
+					label.SetText("Coder Workspaces")
+				}
+			case isRepoNode(id):
 				repo := repoFromNode(id)
-				count := len(codespace.FilterByRepo(uw.daemon.Codespaces(), repo))
+				count := len(provider.FilterByRepo(filterWorkspacesByProvider(uw.daemon.Workspaces(), provider.NameGitHub), repo))
 				if count > 0 {
 					label.SetText(fmt.Sprintf("%s (%d)", repo, count))
 				} else {
 					label.SetText(repo)
 				}
-			} else if isCsNode(id) {
-				csName := csNameFromNode(id)
-				for _, cs := range uw.daemon.Codespaces() {
-					if cs.Name == csName {
-						label.SetText(fmt.Sprintf("  %s %s", stateIcon(cs.State), csLabel(cs)))
+			case isWorkspaceNode(id):
+				providerName, name := providerAndNameFromWorkspaceNode(id)
+				for _, ws := range uw.daemon.Workspaces() {
+					if ws.Provider == providerName && ws.Name == name {
+						label.SetText(fmt.Sprintf("  %s %s", stateIcon(ws.State), workspaceLabel(ws)))
 						return
 					}
 				}
-				label.SetText("  " + csName)
-			} else if isNewNode(id) {
-				label.SetText("  + Create new")
+				label.SetText("  " + name)
+			case isNewNode(id):
+				providerName, _ := providerAndContextFromNewNode(id)
+				if providerName == provider.NameCoder {
+					label.SetText("  + Create new Coder workspace")
+				} else {
+					label.SetText("  + Create new")
+				}
 			}
 		},
 	)
@@ -220,13 +261,18 @@ func (uw *unifiedWindow) buildTree() *widget.Tree {
 		if isRepoNode(id) {
 			repo := repoFromNode(id)
 			uw.showRepoSummary(repo)
-		} else if isCsNode(id) {
-			csName := csNameFromNode(id)
-			repo := repoFromCsNode(id)
-			uw.showCodespaceDetail(csName, repo)
+		} else if isWorkspaceNode(id) {
+			providerName, name := providerAndNameFromWorkspaceNode(id)
+			uw.showWorkspaceDetail(providerName, name)
 		} else if isNewNode(id) {
-			repo := repoFromNewNode(id)
-			uw.showCreateNew(repo)
+			providerName, context := providerAndContextFromNewNode(id)
+			uw.showCreateNewForProvider(providerName, context)
+		} else if isSectionNode(id) {
+			if sectionFromNode(id) == provider.NameCoder {
+				uw.showCoderSummary()
+			} else {
+				uw.showWelcome()
+			}
 		}
 	}
 
@@ -236,22 +282,22 @@ func (uw *unifiedWindow) buildTree() *widget.Tree {
 // --- Content panel builders ---
 
 func (uw *unifiedWindow) showWelcome() {
-	msg := widget.NewLabel("Select a repository or codespace to get started.")
+	msg := widget.NewLabel("Select a repository or workspace to get started.")
 	msg.Alignment = fyne.TextAlignCenter
 	uw.setContent(container.NewCenter(msg))
 }
 
 func (uw *unifiedWindow) showRepoSummary(repo string) {
-	all := uw.daemon.Codespaces()
-	repoCS := codespace.FilterByRepo(all, repo)
+	all := filterWorkspacesByProvider(uw.daemon.Workspaces(), provider.NameGitHub)
+	repoWS := provider.FilterByRepo(all, repo)
 
 	title := widget.NewLabel(repo)
 	title.TextStyle = fyne.TextStyle{Bold: true}
 
-	info := widget.NewLabel(fmt.Sprintf("%d codespace(s)", len(repoCS)))
+	info := widget.NewLabel(fmt.Sprintf("%d workspace(s)", len(repoWS)))
 
-	createBtn := widget.NewButton("Create new codespace", func() {
-		uw.showCreateNew(repo)
+	createBtn := widget.NewButton("Create new GitHub codespace", func() {
+		uw.showCreateNewForProvider(provider.NameGitHub, repo)
 	})
 
 	uw.setContent(container.NewVBox(
@@ -261,64 +307,41 @@ func (uw *unifiedWindow) showRepoSummary(repo string) {
 	))
 }
 
-func (uw *unifiedWindow) showCodespaceDetail(csName, repo string) {
-	var cs *codespace.Codespace
-	for _, c := range uw.daemon.Codespaces() {
-		if c.Name == csName {
-			cs = &c
-			break
+func (uw *unifiedWindow) showWorkspaceDetail(providerName, name string) {
+	for _, ws := range uw.daemon.Workspaces() {
+		if ws.Provider == providerName && ws.Name == name {
+			if providerName == provider.NameGitHub {
+				uw.showCosmoCodespaceDetail(name, ws.Repository)
+				return
+			}
+			uw.showCoderWorkspaceDetail(ws)
+			return
 		}
 	}
-	if cs == nil {
-		uw.showWelcome()
-		return
-	}
+	uw.showWelcome()
+}
 
-	title := widget.NewLabel(csLabel(*cs))
+func (uw *unifiedWindow) showCoderSummary() {
+	all := filterWorkspacesByProvider(uw.daemon.Workspaces(), provider.NameCoder)
+	title := widget.NewLabel("Coder Workspaces")
 	title.TextStyle = fyne.TextStyle{Bold: true}
-
-	state := widget.NewLabel(fmt.Sprintf("State: %s %s", stateIcon(cs.State), cs.State))
-
-	branch := ""
-	if cs.GitStatus != nil {
-		ref := cs.GitStatus.Ref
-		if ref == "" {
-			ref = cs.GitStatus.Branch
-		}
-		branch = ref
-	}
-	branchLabel := widget.NewLabel(fmt.Sprintf("Branch: %s", branch))
-
-	target, resolvedName := guiTargetForRepo(uw.daemon.Cfg, repo)
-	matches := codespace.FindMatching([]codespace.Codespace{*cs}, &target)
-	matchLabel := widget.NewLabel("")
-	if len(matches) > 0 {
-		matchLabel.SetText("Matches config target")
-	}
-
-	openBtn := widget.NewButton("Open", func() {
-		uw.daemon.runLaunchFlow(uw.win, target, resolvedName, cs)
+	info := widget.NewLabel(fmt.Sprintf("%d workspace(s)", len(all)))
+	createBtn := widget.NewButton("Create new Coder workspace", func() {
+		uw.showCreateNewForProvider(provider.NameCoder, "")
 	})
-
-	deleteBtn := widget.NewButton("Delete", func() {
-		go func() {
-			_ = codespace.DeleteCodespace(uw.daemon.Runner, cs.Name)
-			fyne.Do(func() {
-				uw.tree.Refresh()
-				uw.showWelcome()
-			})
-		}()
-	})
-
 	uw.setContent(container.NewVBox(
 		layout.NewSpacer(),
-		container.NewCenter(container.NewVBox(
-			title, state, branchLabel, matchLabel,
-			widget.NewSeparator(),
-			container.NewHBox(openBtn, deleteBtn),
-		)),
+		container.NewCenter(container.NewVBox(title, info, createBtn)),
 		layout.NewSpacer(),
 	))
+}
+
+func (uw *unifiedWindow) showCreateNewForProvider(providerName, context string) {
+	if providerName == provider.NameCoder {
+		uw.showCosmoCreateNewCoder()
+		return
+	}
+	uw.showCreateNew(context)
 }
 
 func (uw *unifiedWindow) showCreateNew(repo string) {
@@ -408,6 +431,140 @@ func guiTargetForRepo(cfg *config.Config, repo string) (config.Target, string) {
 		Repository:    repo,
 		WorkspacePath: "/workspaces/" + repoName,
 	}, repo
+}
+
+func guiTargetForCoderWorkspace(cfg *config.Config, ws provider.Workspace) (config.Target, string) {
+	if cfg != nil {
+		for name, t := range cfg.Targets {
+			if t.Coder != nil && t.Coder.WorkspaceName == ws.Name {
+				return applyWorkspaceDefaults(t, ws), name
+			}
+		}
+		for name, t := range cfg.Targets {
+			if t.Coder != nil {
+				t = applyWorkspaceDefaults(t, ws)
+				if t.Coder.WorkspaceName == "" {
+					t.Coder.WorkspaceName = ws.Name
+				}
+				return t, name
+			}
+		}
+	}
+	return config.Target{
+		WorkspacePath: "/workspaces/" + ws.Name,
+		Coder: &config.CoderTargetConfig{
+			WorkspaceName: ws.Name,
+		},
+	}, ws.Name
+}
+
+func applyWorkspaceDefaults(target config.Target, ws provider.Workspace) config.Target {
+	if target.Repository == "" && ws.Repository != "" {
+		target.Repository = ws.Repository
+	}
+	if target.WorkspacePath == "" {
+		target.WorkspacePath = guessWorkspacePath(target, &ws)
+	}
+	return target
+}
+
+func guessWorkspacePath(target config.Target, ws *provider.Workspace) string {
+	if target.WorkspacePath != "" {
+		return target.WorkspacePath
+	}
+	if ws != nil && ws.Provider == provider.NameCoder {
+		return "/workspaces/" + ws.Name
+	}
+	if target.Repository != "" {
+		parts := strings.SplitN(target.Repository, "/", 2)
+		return "/workspaces/" + parts[len(parts)-1]
+	}
+	if ws != nil && ws.Name != "" {
+		return "/workspaces/" + ws.Name
+	}
+	return "/workspaces"
+}
+
+func isWorkspaceRunning(ws provider.Workspace) bool {
+	state := strings.ToLower(ws.State)
+	return state == "available" || state == "ready" || state == "running" || state == "connected"
+}
+
+func filterWorkspacesByProvider(workspaces []provider.Workspace, providerName string) []provider.Workspace {
+	var result []provider.Workspace
+	for _, ws := range workspaces {
+		if ws.Provider == providerName {
+			result = append(result, ws)
+		}
+	}
+	return result
+}
+
+func workspaceMatchesFilter(ws provider.Workspace, filter string) bool {
+	filter = strings.ToLower(strings.TrimSpace(filter))
+	if filter == "" {
+		return true
+	}
+	fields := []string{ws.Name, ws.DisplayName, ws.Repository, ws.Branch, ws.Template}
+	for _, field := range fields {
+		if strings.Contains(strings.ToLower(field), filter) {
+			return true
+		}
+	}
+	return false
+}
+
+func workspaceLabel(ws provider.Workspace) string {
+	name := ws.DisplayName
+	if name == "" {
+		name = ws.Name
+	}
+	if ws.Provider == provider.NameCoder && ws.Template != "" {
+		return fmt.Sprintf("%s (%s)", name, ws.Template)
+	}
+	if ws.Branch != "" {
+		return fmt.Sprintf("%s (%s)", name, ws.Branch)
+	}
+	return name
+}
+
+func configuredCoderTargets(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	var names []string
+	for name, target := range cfg.Targets {
+		if target.Coder != nil && target.Coder.Template != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func coderWorkspaceNameFromInput(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		return ""
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDash = false
+		case r == '-' || r == '_' || r == ' ' || r == '/':
+			if !lastDash && b.Len() > 0 {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	name := strings.Trim(b.String(), "-")
+	if len(name) > 63 {
+		name = strings.Trim(name[:63], "-")
+	}
+	return name
 }
 
 func countRecentRepos(sorted []string, hist *history.History) int {

@@ -90,6 +90,44 @@ let
         default = null;
         description = "Time-of-day to pre-warm codespace (e.g. 08:00).";
       };
+
+      coder = lib.mkOption {
+        type = lib.types.nullOr (lib.types.submodule ({ ... }: {
+          options = {
+            template = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Coder template name used to create the workspace.";
+            };
+
+            workspaceName = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Exact Coder workspace name for reuse and creation.";
+            };
+
+            parameters = lib.mkOption {
+              type = lib.types.attrsOf lib.types.str;
+              default = { };
+              description = "Coder template parameters passed as --parameter name=value.";
+            };
+
+            stopAfter = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Auto-stop duration passed to coder create (for example 8h).";
+            };
+
+            organization = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Override the default Coder organization for this target.";
+            };
+          };
+        }));
+        default = null;
+        description = "Coder-specific target settings.";
+      };
     };
   };
 
@@ -97,12 +135,22 @@ let
 
   configJSON = builtins.toJSON (filterNulls {
     defaultTarget = cfg.defaultTarget;
+    workspaceProvider = cfg.workspaceProvider;
     editor = cfg.editor;
+    providers = filterNulls {
+      coder = lib.optionalAttrs (cfg.providers.coder.organization != null) {
+        organization = cfg.providers.coder.organization;
+      };
+    };
     targets = lib.mapAttrs (_: target: filterNulls {
       inherit (target)
         repository branch displayName codespaceName workspacePath
         machine location devcontainerPath idleTimeout retentionPeriod
         uploadBinaryOverSsh zedNickname autoStop preWarm;
+      coder = if target.coder == null then null else filterNulls {
+        inherit (target.coder) template workspaceName stopAfter organization;
+        parameters = if target.coder.parameters == { } then null else target.coder.parameters;
+      };
     }) cfg.targets;
     daemon = lib.optionalAttrs cfg.daemon.enable (filterNulls {
       hotkey = cfg.daemon.hotkey;
@@ -145,6 +193,18 @@ in
       type = lib.types.nullOr (lib.types.enum [ "zed" "neovim" ]);
       default = null;
       description = "Editor to use for opening codespaces (zed or neovim). Defaults to zed.";
+    };
+
+    workspaceProvider = lib.mkOption {
+      type = lib.types.nullOr (lib.types.enum [ "github" "coder" ]);
+      default = null;
+      description = "Workspace provider to use globally. Defaults to github.";
+    };
+
+    providers.coder.organization = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Default Coder organization name or UUID.";
     };
 
     targets = lib.mkOption {

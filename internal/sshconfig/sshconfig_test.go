@@ -22,6 +22,43 @@ Host cs-demo
 	}
 }
 
+func TestParsePrimaryHostAliasSkipsWildcardHosts(t *testing.T) {
+	sshConfig := `
+Host coder.*
+  ProxyCommand coder ssh --stdio %h
+
+Host *.coder
+  ProxyCommand coder ssh --stdio %h
+`
+	_, err := ParsePrimaryHostAlias(sshConfig)
+	if err == nil {
+		t.Fatal("expected no concrete alias to be found")
+	}
+}
+
+func TestReadExistingWorkspaceAliasForCoderUsesConcreteWorkspaceAlias(t *testing.T) {
+	dir := t.TempDir()
+	paths := SSHPaths{IncludeDir: dir}
+	path := filepath.Join(dir, "coder.conf")
+	body := `
+Host coder.*
+  ProxyCommand coder ssh --stdio %h
+
+Host *.coder
+  ProxyCommand coder ssh --stdio %h
+`
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := ReadExistingWorkspaceAlias(paths, "coder", "my-workspace")
+	if !ok {
+		t.Fatal("expected coder alias to be detected")
+	}
+	if got != "my-workspace.coder" {
+		t.Fatalf("got %q, want %q", got, "my-workspace.coder")
+	}
+}
+
 func TestEnsureIncludeLineIsIdempotent(t *testing.T) {
 	once := EnsureIncludeLine("Host example\n  HostName example.com\n")
 	twice := EnsureIncludeLine(once)

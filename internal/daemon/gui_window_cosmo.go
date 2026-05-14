@@ -34,7 +34,9 @@ import (
 	"image/color"
 
 	"github.com/linuskendall/cosmonaut/internal/codespace"
+	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/doctor"
+	"github.com/linuskendall/cosmonaut/internal/provider"
 )
 
 const (
@@ -66,7 +68,7 @@ func (d *Daemon) newCosmoWindow() *unifiedWindow {
 
 	// Background fetch of all user repos.
 	go func() {
-		allUserRepos, err := codespace.ListAllRepos(d.Runner)
+		allUserRepos, err := provider.NewGitHubManager(d.Runner).ListRepositories()
 		if err != nil {
 			log.Printf("gui: fetch repos: %v", err)
 			return
@@ -173,7 +175,7 @@ func (uw *unifiedWindow) fixButton(c doctor.Check) *widget.Button {
 }
 
 // buildCosmoSidebar constructs the left pane with title row, search,
-// repo tree, and account footer. Separator canvases give crisp 1px lines
+// workspace tree, and account footer. Separator canvases give crisp 1px lines
 // that respect the theme's border color.
 func (uw *unifiedWindow) buildCosmoSidebar() fyne.CanvasObject {
 	// Title row: mark + name + "+" action
@@ -217,7 +219,7 @@ func (uw *unifiedWindow) buildCosmoSidebar() fyne.CanvasObject {
 
 	// Search
 	filterEntry := widget.NewEntry()
-	filterEntry.PlaceHolder = "Filter repositories…"
+	filterEntry.PlaceHolder = "Filter workspaces…"
 	filterEntry.OnChanged = func(text string) {
 		uw.filter = text
 		uw.applyFilter()
@@ -229,18 +231,40 @@ func (uw *unifiedWindow) buildCosmoSidebar() fyne.CanvasObject {
 	uw.tree.OnSelected = func(id widget.TreeNodeID) {
 		if isRepoNode(id) {
 			repo := repoFromNode(id)
-			// Auto-expand repos that have codespaces.
-			if len(codespace.FilterByRepo(uw.daemon.Codespaces(), repo)) > 0 {
+			if len(provider.FilterByRepo(filterWorkspacesByProvider(uw.daemon.Workspaces(), provider.NameGitHub), repo)) > 0 {
 				uw.tree.OpenBranch(id)
 			}
 			uw.showCosmoRepoSummary(repo)
-		} else if isCsNode(id) {
-			csName := csNameFromNode(id)
-			repo := repoFromCsNode(id)
-			uw.showCosmoCodespaceDetail(csName, repo)
+		} else if isWorkspaceNode(id) {
+			providerName, name := providerAndNameFromWorkspaceNode(id)
+			if providerName == provider.NameGitHub {
+				for _, ws := range uw.daemon.Workspaces() {
+					if ws.Provider == providerName && ws.Name == name {
+						uw.showCosmoCodespaceDetail(name, ws.Repository)
+						return
+					}
+				}
+			} else {
+				for _, ws := range uw.daemon.Workspaces() {
+					if ws.Provider == providerName && ws.Name == name {
+						uw.showCoderWorkspaceDetail(ws)
+						return
+					}
+				}
+			}
 		} else if isNewNode(id) {
-			repo := repoFromNewNode(id)
-			uw.showCosmoCreateNew(repo)
+			providerName, context := providerAndContextFromNewNode(id)
+			if providerName == provider.NameCoder {
+				uw.showCosmoCreateNewCoder()
+			} else {
+				uw.showCosmoCreateNew(context)
+			}
+		} else if isSectionNode(id) {
+			if sectionFromNode(id) == provider.NameCoder {
+				uw.showCoderSummary()
+			} else {
+				uw.showCosmoWelcome()
+			}
 		}
 	}
 
@@ -378,7 +402,23 @@ func (uw *unifiedWindow) showCosmoCodespaceDetail(csName, repo string) {
 	openBtn := primaryButton("Open", func() {
 		origEditor := uw.daemon.Cfg.Editor
 		uw.daemon.Cfg.Editor = selectedEditor
-		uw.daemon.runLaunchFlow(uw.win, target, resolvedName, cs)
+		workspace := provider.Workspace{
+			Provider:    provider.NameGitHub,
+			Name:        cs.Name,
+			DisplayName: cs.DisplayName,
+			Repository:  repo,
+			State:       cs.State,
+			MachineName: cs.MachineName,
+			CreatedAt:   cs.CreatedAt,
+			LastUsedAt:  cs.LastUsedAt,
+		}
+		if cs.GitStatus != nil {
+			workspace.Branch = cs.GitStatus.Ref
+			if workspace.Branch == "" {
+				workspace.Branch = cs.GitStatus.Branch
+			}
+		}
+		uw.daemon.runLaunchFlow(uw.win, target, resolvedName, &workspace)
 		uw.daemon.Cfg.Editor = origEditor
 	})
 
@@ -525,9 +565,9 @@ func (uw *unifiedWindow) portRow(csName, repo string, port codespace.Port) fyne.
 
 func stateColor(state string) color.Color {
 	switch state {
-	case "Available":
+	case "Available", "Started", "ready", "running", "connected":
 		return cLime
-	case "Starting":
+	case "Starting", "starting", "pending":
 		return cOrange
 	case "Error":
 		return cRed
@@ -547,7 +587,7 @@ func (uw *unifiedWindow) showCosmoWelcome() {
 	h.TextStyle = fyne.TextStyle{Bold: true}
 	h.Alignment = fyne.TextAlignCenter
 
-	sub := canvas.NewText("Select a repository or codespace to get started.", cTextMute)
+	sub := canvas.NewText("Select a GitHub repo or Coder workspace to get started.", cTextMute)
 	sub.TextSize = 12
 	sub.Alignment = fyne.TextAlignCenter
 
@@ -560,18 +600,18 @@ func (uw *unifiedWindow) showCosmoWelcome() {
 // ── REPO SUMMARY ───────────────────────────────────────────────────────
 
 func (uw *unifiedWindow) showCosmoRepoSummary(repo string) {
-	all := uw.daemon.Codespaces()
-	repoCS := codespace.FilterByRepo(all, repo)
+	all := filterWorkspacesByProvider(uw.daemon.Workspaces(), provider.NameGitHub)
+	repoCS := provider.FilterByRepo(all, repo)
 
 	title := canvas.NewText(repo, cText)
 	title.TextSize = 18
 	title.TextStyle = fyne.TextStyle{Bold: true}
 
-	countText := fmt.Sprintf("%d codespace(s)", len(repoCS))
+	countText := fmt.Sprintf("%d workspace(s)", len(repoCS))
 	info := canvas.NewText(countText, cTextDim)
 	info.TextSize = 13
 
-	createBtn := primaryButton("Create new codespace", func() {
+	createBtn := primaryButton("Create new GitHub codespace", func() {
 		uw.showCosmoCreateNew(repo)
 	})
 
@@ -585,7 +625,31 @@ func (uw *unifiedWindow) showCosmoRepoSummary(repo string) {
 // ── CREATE ──────────────────────────────────────────────────────────────
 
 func (uw *unifiedWindow) showCreateNewGeneric() {
-	uw.showCosmoCreateNew("")
+	title := canvas.NewText("Create a new workspace", cText)
+	title.TextSize = 18
+	title.TextStyle = fyne.TextStyle{Bold: true}
+
+	copy := widget.NewLabel("Choose a provider. GitHub creation is repo-based; Coder creation uses configured Coder targets.")
+	copy.Wrapping = fyne.TextWrapWord
+
+	githubBtn := primaryButton("GitHub Codespace", func() {
+		uw.showCosmoWelcome()
+	})
+	coderBtn := primaryButton("Coder Workspace", func() {
+		uw.showCosmoCreateNewCoder()
+	})
+
+	hint := widget.NewLabel("For GitHub, select a repository in the left pane and use its create action.")
+	hint.Wrapping = fyne.TextWrapWord
+
+	body := container.NewPadded(container.NewVBox(
+		title,
+		widget.NewSeparator(),
+		copy,
+		container.NewHBox(githubBtn, coderBtn),
+		hint,
+	))
+	uw.setContent(container.NewCenter(body))
 }
 
 func (uw *unifiedWindow) showCosmoCreateNew(repo string) {
@@ -657,6 +721,214 @@ func (uw *unifiedWindow) showCosmoCreateNew(repo string) {
 		widget.NewSeparator(),
 		form,
 		actions,
+	))
+	uw.setContent(container.NewScroll(body))
+}
+
+func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
+	target, resolvedName := guiTargetForCoderWorkspace(uw.daemon.Cfg, ws)
+
+	stateLbl := canvas.NewText(strings.ToUpper(ws.State), stateColor(ws.State))
+	stateLbl.TextSize = 10
+	stateLbl.TextStyle = fyne.TextStyle{Monospace: true, Bold: true}
+	statusRow := container.NewHBox(stateDot(ws.State), stateLbl)
+
+	title := ws.DisplayName
+	if title == "" {
+		title = ws.Name
+	}
+	heroTitle := canvas.NewText(title, cText)
+	heroTitle.TextSize = 16
+	heroTitle.TextStyle = fyne.TextStyle{Bold: true}
+
+	subtitle := canvas.NewText("coder", cTextMute)
+	subtitle.TextSize = 11
+	subtitle.TextStyle = fyne.TextStyle{Monospace: true}
+
+	selectedEditor := uw.daemon.getEditor().Name()
+	editorSel := widget.NewSelect([]string{"zed", "neovim"}, func(val string) {
+		selectedEditor = val
+	})
+	editorSel.Selected = selectedEditor
+
+	openBtn := primaryButton("Open", func() {
+		origEditor := uw.daemon.Cfg.Editor
+		uw.daemon.Cfg.Editor = selectedEditor
+		workspace := ws
+		uw.daemon.runLaunchFlow(uw.win, target, resolvedName, &workspace)
+		uw.daemon.Cfg.Editor = origEditor
+	})
+
+	nameVal := widget.NewLabel(ws.Name)
+	nameVal.TextStyle = fyne.TextStyle{Monospace: true}
+	stateVal := widget.NewLabel(ws.State)
+	templateVal := widget.NewLabel(ws.Template)
+	lastUsedVal := widget.NewLabel(formatTimeAgo(ws.LastUsedAt))
+	sshHostVal := widget.NewLabel(fmt.Sprintf("%s.coder", ws.Name))
+	sshHostVal.TextStyle = fyne.TextStyle{Monospace: true}
+	pathVal := widget.NewLabel(guessWorkspacePath(target, &ws))
+	pathVal.TextStyle = fyne.TextStyle{Monospace: true}
+
+	info := widget.NewForm(
+		widget.NewFormItem("Workspace", nameVal),
+		widget.NewFormItem("State", stateVal),
+		widget.NewFormItem("Template", templateVal),
+		widget.NewFormItem("Last used", lastUsedVal),
+		widget.NewFormItem("SSH host", sshHostVal),
+		widget.NewFormItem("Path", pathVal),
+	)
+
+	body := container.NewVBox(
+		statusRow,
+		heroTitle,
+		subtitle,
+		widget.NewSeparator(),
+		container.NewHBox(openBtn, editorSel),
+		widget.NewSeparator(),
+		info,
+	)
+	uw.setContent(container.NewPadded(body))
+}
+
+func (uw *unifiedWindow) showCosmoCreateNewCoder() {
+	title := canvas.NewText("Create a new Coder workspace", cText)
+	title.TextSize = 18
+	title.TextStyle = fyne.TextStyle{Bold: true}
+
+	targetNames := configuredCoderTargets(uw.daemon.Cfg)
+	if len(targetNames) == 0 {
+		uw.showCosmoCreateNewCoderFromTemplates(title)
+		return
+	}
+
+	targetSel := widget.NewSelect(targetNames, func(string) {})
+	targetSel.SetSelected(targetNames[0])
+	baseTarget := uw.daemon.Cfg.Targets[targetNames[0]]
+
+	nameEntry := widget.NewEntry()
+	nameEntry.PlaceHolder = "e.g. my-repo-review"
+	if baseTarget.Coder != nil && baseTarget.Coder.WorkspaceName != "" {
+		nameEntry.SetText(baseTarget.Coder.WorkspaceName)
+	}
+
+	pathEntry := widget.NewEntry()
+	pathEntry.PlaceHolder = "/workspaces/my-repo"
+	pathEntry.SetText(guessWorkspacePath(baseTarget, nil))
+
+	targetSel.OnChanged = func(name string) {
+		t := uw.daemon.Cfg.Targets[name]
+		if t.Coder != nil && t.Coder.WorkspaceName != "" {
+			nameEntry.SetText(t.Coder.WorkspaceName)
+		}
+		pathEntry.SetText(guessWorkspacePath(t, nil))
+	}
+
+	form := widget.NewForm(
+		widget.NewFormItem("Target", targetSel),
+		widget.NewFormItem("Workspace name", nameEntry),
+		widget.NewFormItem("Workspace path", pathEntry),
+	)
+
+	hint := widget.NewLabel("")
+	hint.Wrapping = fyne.TextWrapWord
+
+	createBtn := primaryButton("Create and open", func() {
+		targetName := targetSel.Selected
+		target := uw.daemon.Cfg.Targets[targetName]
+		if target.Coder == nil {
+			hint.SetText("Selected target is missing coder settings.")
+			return
+		}
+		name := coderWorkspaceNameFromInput(nameEntry.Text)
+		if name == "" {
+			hint.SetText("Enter a workspace name.")
+			return
+		}
+		target.WorkspacePath = strings.TrimSpace(pathEntry.Text)
+		if target.WorkspacePath == "" {
+			target.WorkspacePath = "/workspaces/" + name
+		}
+		target.Coder.WorkspaceName = name
+		uw.daemon.runCreateAndLaunch(uw.win, target, targetName)
+	})
+	cancelBtn := widget.NewButton("Cancel", func() { uw.showCosmoWelcome() })
+
+	actions := container.NewHBox(layout.NewSpacer(), cancelBtn, createBtn)
+	body := container.NewPadded(container.NewVBox(
+		title,
+		widget.NewSeparator(),
+		form,
+		hint,
+		actions,
+	))
+	uw.setContent(container.NewScroll(body))
+}
+
+func (uw *unifiedWindow) showCosmoCreateNewCoderFromTemplates(title *canvas.Text) {
+	manager := provider.NewCoderManager(uw.daemon.Cfg)
+	templates, err := manager.ListTemplates()
+	if err != nil {
+		msg := widget.NewLabel(fmt.Sprintf("Could not load Coder templates automatically: %v", err))
+		msg.Wrapping = fyne.TextWrapWord
+		uw.setContent(container.NewPadded(container.NewVBox(title, widget.NewSeparator(), msg)))
+		return
+	}
+	if len(templates) == 0 {
+		msg := widget.NewLabel("No Coder templates were found.")
+		msg.Wrapping = fyne.TextWrapWord
+		uw.setContent(container.NewPadded(container.NewVBox(title, widget.NewSeparator(), msg)))
+		return
+	}
+
+	templateNames := make([]string, 0, len(templates))
+	for _, tpl := range templates {
+		templateNames = append(templateNames, tpl.Name)
+	}
+
+	templateSel := widget.NewSelect(templateNames, func(string) {})
+	templateSel.SetSelected(templateNames[0])
+
+	nameEntry := widget.NewEntry()
+	nameEntry.PlaceHolder = "e.g. my-repo-review"
+
+	pathEntry := widget.NewEntry()
+	pathEntry.PlaceHolder = "/workspaces/my-workspace"
+
+	form := widget.NewForm(
+		widget.NewFormItem("Template", templateSel),
+		widget.NewFormItem("Workspace name", nameEntry),
+		widget.NewFormItem("Workspace path", pathEntry),
+	)
+
+	hint := widget.NewLabel("Using live Coder templates because no Coder target is configured.")
+	hint.Wrapping = fyne.TextWrapWord
+
+	createBtn := primaryButton("Create and open", func() {
+		name := coderWorkspaceNameFromInput(nameEntry.Text)
+		if name == "" {
+			hint.SetText("Enter a workspace name.")
+			return
+		}
+		target := config.Target{
+			WorkspacePath: strings.TrimSpace(pathEntry.Text),
+			Coder: &config.CoderTargetConfig{
+				Template:      templateSel.Selected,
+				WorkspaceName: name,
+			},
+		}
+		if target.WorkspacePath == "" {
+			target.WorkspacePath = "/workspaces/" + name
+		}
+		uw.daemon.runCreateAndLaunch(uw.win, target, name)
+	})
+	cancelBtn := widget.NewButton("Cancel", func() { uw.showCosmoWelcome() })
+
+	body := container.NewPadded(container.NewVBox(
+		title,
+		widget.NewSeparator(),
+		form,
+		hint,
+		container.NewHBox(layout.NewSpacer(), cancelBtn, createBtn),
 	))
 	uw.setContent(container.NewScroll(body))
 }

@@ -16,8 +16,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/linuskendall/cosmonaut/internal/codespace"
 	"github.com/linuskendall/cosmonaut/internal/config"
+	"github.com/linuskendall/cosmonaut/internal/provider"
 )
 
 const numberTimeout = 500 * time.Millisecond
@@ -325,19 +325,19 @@ func RunRepoSelection(repos []string, recentCount int) (string, error) {
 	return result.Repo, nil
 }
 
-// --- Codespace Selection Model ---
+// --- Workspace Selection Model ---
 
-// SelectResult holds the outcome of the codespace selection TUI.
+// SelectResult holds the outcome of the workspace selection TUI.
 type SelectResult struct {
-	Selected *codespace.Codespace // nil means "create new"
-	Delete   *codespace.Codespace // non-nil means user wants to delete this codespace
+	Selected *provider.Workspace // nil means "create new"
+	Delete   *provider.Workspace // non-nil means user wants to delete this workspace
 	Quit     bool
 	Back     bool // user wants to go back to repo selection
 }
 
-// SelectModel is the Bubbletea model for codespace selection.
+// SelectModel is the Bubbletea model for workspace selection.
 type SelectModel struct {
-	codespaces     []codespace.Codespace
+	workspaces     []provider.Workspace
 	target         config.Target
 	dryRun         bool
 	allowBack      bool // whether esc means "back" instead of "quit"
@@ -354,12 +354,12 @@ type SelectModel struct {
 
 // NewSelectModel creates a selection model.
 // If allowBack is true, esc/backspace signals "go back" instead of quit.
-func NewSelectModel(codespaces []codespace.Codespace, target config.Target, dryRun, allowBack bool) SelectModel {
-	matches := codespace.FindMatching(codespaces, &target)
+func NewSelectModel(workspaces []provider.Workspace, target config.Target, dryRun, allowBack bool) SelectModel {
+	matches := provider.FindMatching(workspaces, &target)
 	recommended := -1
 	if len(matches) == 1 {
-		for i, cs := range codespaces {
-			if cs.Name == matches[0].Name {
+		for i, ws := range workspaces {
+			if ws.Name == matches[0].Name {
 				recommended = i
 				break
 			}
@@ -367,7 +367,7 @@ func NewSelectModel(codespaces []codespace.Codespace, target config.Target, dryR
 	}
 
 	return SelectModel{
-		codespaces:     codespaces,
+		workspaces:     workspaces,
 		target:         target,
 		dryRun:         dryRun,
 		allowBack:      allowBack,
@@ -380,7 +380,7 @@ func NewSelectModel(codespaces []codespace.Codespace, target config.Target, dryR
 func (m SelectModel) Init() tea.Cmd { return tea.EnableMouseCellMotion }
 
 func (m SelectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	totalChoices := len(m.codespaces) + 1
+	totalChoices := len(m.workspaces) + 1
 
 	switch msg := msg.(type) {
 	case numberTimeoutMsg:
@@ -462,9 +462,9 @@ func (m SelectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.numberBuf = ""
 			return m.selectCurrent()
 		case "d", "x":
-			if m.cursor < len(m.codespaces) {
-				cs := m.codespaces[m.cursor]
-				m.result.Delete = &cs
+			if m.cursor < len(m.workspaces) {
+				ws := m.workspaces[m.cursor]
+				m.result.Delete = &ws
 				m.done = true
 				return m, tea.Quit
 			}
@@ -486,9 +486,9 @@ func (m SelectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m SelectModel) selectCurrent() (tea.Model, tea.Cmd) {
-	if m.cursor < len(m.codespaces) {
-		cs := m.codespaces[m.cursor]
-		m.result.Selected = &cs
+	if m.cursor < len(m.workspaces) {
+		ws := m.workspaces[m.cursor]
+		m.result.Selected = &ws
 	} else {
 		m.result.Selected = nil // create new
 	}
@@ -502,11 +502,11 @@ func (m SelectModel) View() string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Existing codespaces found for %s:\n\n", m.repo)
+	fmt.Fprintf(&b, "Existing workspaces found for %s:\n\n", m.repo)
 
-	for i, cs := range m.codespaces {
+	for i, ws := range m.workspaces {
 		recommended := i == m.recommendedIdx
-		desc := codespace.DescribeCodespace(&cs, recommended)
+		desc := provider.DescribeWorkspace(&ws, recommended)
 
 		cursor := "  "
 		if i == m.cursor {
@@ -526,13 +526,13 @@ func (m SelectModel) View() string {
 	}
 
 	// "Create new" option
-	createIdx := len(m.codespaces)
+	createIdx := len(m.workspaces)
 	cursor := "  "
 	if m.cursor == createIdx {
 		cursor = cursorStyle.Render("> ")
 	}
 	num := fmt.Sprintf("%d. ", createIdx+1)
-	label := "create a new codespace"
+	label := "create a new workspace"
 	if m.dryRun {
 		label += " (disabled by --dry-run)"
 	}

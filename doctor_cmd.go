@@ -3,11 +3,13 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
-	"github.com/linuskendall/cosmonaut/internal/codespace"
+	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/doctor"
+	"github.com/linuskendall/cosmonaut/internal/provider"
 )
 
 func doctorCmd() *cobra.Command {
@@ -19,36 +21,51 @@ func doctorCmd() *cobra.Command {
 and report which pass and which need attention.
 
 With --fix, programmatic fixes are applied directly. Fixes that need a
-TTY (such as gh auth refresh) are printed as commands you can copy and
+		TTY (such as gh auth refresh) are printed as commands you can copy and
 run yourself.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor(fix)
+			configPath, err := cmd.Flags().GetString("config")
+			if err != nil {
+				return err
+			}
+			return runDoctor(configPath, fix)
 		},
 	}
 	cmd.Flags().BoolVar(&fix, "fix", false, "apply fixes for failing checks")
 	return cmd
 }
 
-func runDoctor(applyFixes bool) error {
-	if err := codespace.RequireCommand("gh"); err != nil {
+func runDoctor(configPath string, applyFixes bool) error {
+	absConfigPath, err := filepath.Abs(configPath)
+	if err != nil {
 		return err
 	}
-	runner := codespace.DefaultGHRunner{}
+	cfg, _ := config.LoadConfig(absConfigPath)
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	manager, err := provider.NewManager(cfg)
+	if err != nil {
+		return err
+	}
+	if err := manager.EnsurePrereqs(); err != nil {
+		return err
+	}
 
-	// Lazy: only call gh codespace list if a check actually needs it.
+	// Lazy: only call provider list if a check actually needs it.
 	var (
 		listErrCalled bool
 		listErrCache  error
 	)
 	listErr := func() error {
 		if !listErrCalled {
-			_, listErrCache = codespace.ListAllCodespaces(runner)
+			_, listErrCache = manager.ListAllWorkspaces()
 			listErrCalled = true
 		}
 		return listErrCache
 	}
 
-	checks := doctor.Catalog(listErr)
+	checks := doctor.CatalogForProvider(manager.Name(), listErr)
 	out := os.Stdout
 	failures := 0
 

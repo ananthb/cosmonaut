@@ -12,42 +12,64 @@ import (
 )
 
 type Config struct {
-	DefaultTarget string            `json:"defaultTarget,omitempty"`
-	Editor        string            `json:"editor,omitempty"` // "zed" (default) or "neovim"
-	Targets       map[string]Target `json:"targets"`
-	Daemon        *DaemonConfig     `json:"daemon,omitempty"`
+	DefaultTarget     string            `json:"defaultTarget,omitempty"`
+	WorkspaceProvider string            `json:"workspaceProvider,omitempty"` // "github" (default) or "coder"
+	Editor            string            `json:"editor,omitempty"`            // "zed" (default) or "neovim"
+	Providers         ProviderConfigs   `json:"providers,omitempty"`
+	Targets           map[string]Target `json:"targets"`
+	Daemon            *DaemonConfig     `json:"daemon,omitempty"`
+}
+
+type ProviderConfigs struct {
+	GitHub GitHubProviderConfig `json:"github,omitempty"`
+	Coder  CoderProviderConfig  `json:"coder,omitempty"`
+}
+
+type GitHubProviderConfig struct{}
+
+type CoderProviderConfig struct {
+	Organization string `json:"organization,omitempty"`
 }
 
 // DaemonConfig holds settings for the background daemon (tray, hotkey, poller).
 type DaemonConfig struct {
 	Hotkey       string `json:"hotkey,omitempty"`       // e.g. "Cmd+Shift+S" (macOS) or "Ctrl+Shift+S" (Linux)
 	HotkeyAction string `json:"hotkeyAction,omitempty"` // "picker" (default), "previous", or "default"
-	Terminal     string `json:"terminal,omitempty"`      // terminal app to launch picker in; "auto" to detect
-	PollInterval string `json:"pollInterval,omitempty"`  // how often to poll codespace state (e.g. "5m")
+	Terminal     string `json:"terminal,omitempty"`     // terminal app to launch picker in; "auto" to detect
+	PollInterval string `json:"pollInterval,omitempty"` // how often to poll codespace state (e.g. "5m")
 	InhibitSleep string `json:"inhibitSleep,omitempty"` // "off" (default), "sleep", or "sleep+shutdown"
 }
 
 type Target struct {
-	Repository         string `json:"repository"`
-	Branch             string `json:"branch,omitempty"`
-	DisplayName        string `json:"displayName,omitempty"`
-	CodespaceName      string `json:"codespaceName,omitempty"`
-	WorkspacePath      string `json:"workspacePath"`
-	Machine            string `json:"machine,omitempty"`
-	Location           string `json:"location,omitempty"`
-	DevcontainerPath   string `json:"devcontainerPath,omitempty"`
-	IdleTimeout        string `json:"idleTimeout,omitempty"`
-	RetentionPeriod    string `json:"retentionPeriod,omitempty"`
-	UploadBinaryOverSSH *bool  `json:"uploadBinaryOverSsh,omitempty"`
-	ZedNickname        string `json:"zedNickname,omitempty"`
-	AutoStop           string `json:"autoStop,omitempty"`  // auto-stop after idle duration (e.g. "30m")
-	PreWarm            string `json:"preWarm,omitempty"`   // time-of-day to pre-warm codespace (e.g. "08:00")
+	Repository          string             `json:"repository,omitempty"`
+	Branch              string             `json:"branch,omitempty"`
+	DisplayName         string             `json:"displayName,omitempty"`
+	CodespaceName       string             `json:"codespaceName,omitempty"`
+	WorkspacePath       string             `json:"workspacePath"`
+	Machine             string             `json:"machine,omitempty"`
+	Location            string             `json:"location,omitempty"`
+	DevcontainerPath    string             `json:"devcontainerPath,omitempty"`
+	IdleTimeout         string             `json:"idleTimeout,omitempty"`
+	RetentionPeriod     string             `json:"retentionPeriod,omitempty"`
+	UploadBinaryOverSSH *bool              `json:"uploadBinaryOverSsh,omitempty"`
+	ZedNickname         string             `json:"zedNickname,omitempty"`
+	AutoStop            string             `json:"autoStop,omitempty"` // auto-stop after idle duration (e.g. "30m")
+	PreWarm             string             `json:"preWarm,omitempty"`  // time-of-day to pre-warm codespace (e.g. "08:00")
+	Coder               *CoderTargetConfig `json:"coder,omitempty"`
+}
+
+type CoderTargetConfig struct {
+	Template      string            `json:"template,omitempty"`
+	WorkspaceName string            `json:"workspaceName,omitempty"`
+	Parameters    map[string]string `json:"parameters,omitempty"`
+	StopAfter     string            `json:"stopAfter,omitempty"`
+	Organization  string            `json:"organization,omitempty"`
 }
 
 var (
-	blockCommentRe    = regexp.MustCompile(`(?s)/\*.*?\*/`)
-	lineCommentRe     = regexp.MustCompile(`(?m)^\s*//.*$`)
-	trailingCommaRe   = regexp.MustCompile(`,\s*([}\]])`)
+	blockCommentRe  = regexp.MustCompile(`(?s)/\*.*?\*/`)
+	lineCommentRe   = regexp.MustCompile(`(?m)^\s*//.*$`)
+	trailingCommaRe = regexp.MustCompile(`,\s*([}\]])`)
 )
 
 // ParseJSONC strips comments and trailing commas, then returns clean JSON bytes.
@@ -75,6 +97,10 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 
+	if cfg.WorkspaceProvider == "" {
+		cfg.WorkspaceProvider = "github"
+	}
+
 	return &cfg, nil
 }
 
@@ -89,6 +115,26 @@ func SaveConfig(path string, cfg *Config) error {
 	return os.WriteFile(path, data, 0644)
 }
 
+func (c *Config) EffectiveWorkspaceProvider() string {
+	if c == nil || c.WorkspaceProvider == "" {
+		return "github"
+	}
+	return c.WorkspaceProvider
+}
+
+func (t Target) ExplicitWorkspaceName(provider string) string {
+	if provider == "coder" {
+		if t.Coder != nil && t.Coder.WorkspaceName != "" {
+			return t.Coder.WorkspaceName
+		}
+		return ""
+	}
+	if t.CodespaceName != "" {
+		return t.CodespaceName
+	}
+	return ""
+}
+
 // FieldDoc describes a single config target field for generated documentation.
 type FieldDoc struct {
 	JSON     string // JSON key name
@@ -99,7 +145,7 @@ type FieldDoc struct {
 
 // TargetFieldDocs is the authoritative documentation for every Target field.
 var TargetFieldDocs = []FieldDoc{
-	{"repository", "string", true, "GitHub repository in owner/repo form"},
+	{"repository", "string", false, "GitHub repository in owner/repo form; optional for Coder targets"},
 	{"branch", "string", false, "Preferred branch when creating or matching a codespace"},
 	{"displayName", "string", false, "Exact display name to disambiguate codespace matches"},
 	{"codespaceName", "string", false, "Exact codespace name for strict reuse"},
@@ -113,6 +159,7 @@ var TargetFieldDocs = []FieldDoc{
 	{"zedNickname", "string", false, "Friendly name shown in Zed's remote project list"},
 	{"autoStop", "string", false, "Auto-stop codespace after idle duration (e.g. 30m)"},
 	{"preWarm", "string", false, "Time-of-day to pre-warm codespace (e.g. 08:00)"},
+	{"coder", "object", false, "Coder-specific target settings: template, workspaceName, parameters, stopAfter, organization"},
 }
 
 // DaemonFieldDocs is the authoritative documentation for DaemonConfig fields.

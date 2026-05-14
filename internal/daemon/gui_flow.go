@@ -3,15 +3,14 @@ package daemon
 import (
 	"fmt"
 	"log"
-	"os"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/dialog"
 
-	"github.com/linuskendall/cosmonaut/internal/codespace"
 	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/editor"
 	"github.com/linuskendall/cosmonaut/internal/history"
+	"github.com/linuskendall/cosmonaut/internal/provider"
 	"github.com/linuskendall/cosmonaut/internal/sshconfig"
 )
 
@@ -19,7 +18,7 @@ import (
 // Args determine initial state:
 //   - no args: show the window with sidebar
 //   - target name or owner/repo: open tree, expand that repo
-//   - "--codespace", csName, target: direct launch with progress
+//   - "--workspace", name, "--provider", provider, target: direct launch
 func (d *Daemon) showGUI(args ...string) {
 	if d.app == nil {
 		log.Println("gui: app not initialized")
@@ -27,12 +26,16 @@ func (d *Daemon) showGUI(args ...string) {
 	}
 
 	// Parse args.
-	var targetArg, codespaceName string
+	var targetArg, workspaceName, providerName string
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--codespace" && i+1 < len(args) {
-			codespaceName = args[i+1]
+		switch {
+		case args[i] == "--workspace" && i+1 < len(args):
+			workspaceName = args[i+1]
 			i++
-		} else {
+		case args[i] == "--provider" && i+1 < len(args):
+			providerName = args[i+1]
+			i++
+		default:
 			targetArg = args[i]
 		}
 	}
@@ -40,16 +43,25 @@ func (d *Daemon) showGUI(args ...string) {
 	fyne.Do(func() {
 		uw := d.newCosmoWindow()
 
-		if codespaceName != "" && targetArg != "" {
-			// Direct codespace launch: show progress immediately.
+		if workspaceName != "" && providerName != "" {
 			target, resolvedName := d.resolveGUITarget(targetArg)
-			cs := &codespace.Codespace{Name: codespaceName, Repository: codespace.RepoField(target.Repository)}
+			manager, err := d.managerForProvider(providerName)
+			if err != nil {
+				showFlowError(uw.win, err)
+				return
+			}
+			ws, err := manager.ResolveWorkspace(workspaceName)
+			if err != nil {
+				showFlowError(uw.win, err)
+				return
+			}
 			uw.win.Show()
-			d.runLaunchFlow(uw.win, target, resolvedName, cs)
+			d.runLaunchFlow(uw.win, target, resolvedName, ws)
 		} else if targetArg != "" {
-			// Open with a specific repo expanded.
 			target, _ := d.resolveGUITarget(targetArg)
-			uw.tree.OpenBranch(repoNodeID(target.Repository))
+			if target.Repository != "" {
+				uw.tree.OpenBranch(repoNodeID(target.Repository))
+			}
 			uw.win.Show()
 		} else {
 			uw.win.Show()
@@ -102,29 +114,37 @@ func showFlowError(win fyne.Window, err error) {
 	})
 }
 
-// runCreateAndLaunch creates a codespace and then launches it.
+// runCreateAndLaunch creates a workspace and then launches it.
 func (d *Daemon) runCreateAndLaunch(win fyne.Window, target config.Target, resolvedName string) {
-	progress := newProgressScreen("Creating codespace...")
+	manager, err := d.managerForTarget(target)
+	if err != nil {
+		showFlowError(win, err)
+		return
+	}
+	progress := newProgressScreen("Creating workspace...")
 	win.SetContent(progress.canvas)
 
 	go func() {
-		cs, err := codespace.CreateCodespace(d.Runner, target)
+		ws, err := manager.CreateWorkspace(target, false)
 		if err != nil {
 			progress.stop()
-			showFlowError(win, fmt.Errorf("creating codespace: %w", err))
+			showFlowError(win, fmt.Errorf("creating workspace: %w", err))
 			return
 		}
-		// runLaunchFlow installs its own progress screen; stop ours so the
-		// first animation goroutine doesn't leak.
 		progress.stop()
-		d.runLaunchFlow(win, target, resolvedName, cs)
+		d.runLaunchFlow(win, target, resolvedName, ws)
 	}()
 }
 
 // runLaunchFlow runs the SSH setup and editor launch sequence.
-func (d *Daemon) runLaunchFlow(win fyne.Window, target config.Target, resolvedName string, selected *codespace.Codespace) {
+func (d *Daemon) runLaunchFlow(win fyne.Window, target config.Target, resolvedName string, selected *provider.Workspace) {
+	manager, err := d.managerForTarget(target)
+	if err != nil {
+		showFlowError(win, err)
+		return
+	}
 	ed := d.getEditor()
-	progress := newProgressScreen("Preparing codespace...")
+	progress := newProgressScreen("Preparing workspace...")
 	fyne.Do(func() { win.SetContent(progress.canvas) })
 
 	go func() {
@@ -135,15 +155,17 @@ func (d *Daemon) runLaunchFlow(win fyne.Window, target config.Target, resolvedNa
 
 		// Record in history.
 		hist := history.Load()
-		hist.Touch(target.Repository)
-		hist.Save()
+		if target.Repository != "" {
+			hist.Touch(target.Repository)
+			hist.Save()
+		}
 
-		// Fast path: if already Available with existing SSH config.
-		if selected.State == "Available" {
+		workspacePath := guessWorkspacePath(target, selected)
+		if isWorkspaceRunning(*selected) {
 			paths := sshconfig.ResolvePaths()
-			if alias, ok := sshconfig.ReadExistingAlias(paths.IncludeDir, selected.Name); ok {
+			if alias, ok := sshconfig.ReadExistingWorkspaceAlias(paths, selected.Provider, selected.Name); ok {
 				setStatus(fmt.Sprintf("Launching %s...", ed.Name()))
-				if err := ed.LaunchRemote(alias, target.WorkspacePath); err != nil {
+				if err := ed.LaunchRemote(alias, workspacePath); err != nil {
 					showFlowError(win, err)
 					return
 				}
@@ -155,54 +177,37 @@ func (d *Daemon) runLaunchFlow(win fyne.Window, target config.Target, resolvedNa
 			}
 		}
 
-		// Ensure SSH connectivity.
-		setStatus("Waiting for codespace SSH...")
-		if err := codespace.EnsureReachable(d.Runner, selected.Name); err != nil {
+		latest, err := manager.StartWorkspace(selected)
+		if err != nil {
+			showFlowError(win, err)
+			return
+		}
+		selected = latest
+
+		setStatus("Waiting for workspace SSH...")
+		if err := manager.EnsureReachable(selected); err != nil {
 			showFlowError(win, fmt.Errorf("SSH connectivity: %w", err))
 			return
 		}
 
-		// Get SSH config.
-		setStatus("Fetching SSH config...")
-		sshCfg, err := codespace.GetSSHConfig(d.Runner, selected.Name)
-		if err != nil {
-			showFlowError(win, err)
-			return
-		}
-
-		sshAlias, err := sshconfig.ParsePrimaryHostAlias(sshCfg)
-		if err != nil {
-			showFlowError(win, err)
-			return
-		}
-
-		// Write SSH config.
 		paths := sshconfig.ResolvePaths()
-		if err := os.MkdirAll(paths.IncludeDir, 0700); err != nil {
-			showFlowError(win, err)
-			return
-		}
-		if err := sshconfig.EnsureConfigIncludesGenerated(paths.MainConfigPath); err != nil {
-			showFlowError(win, err)
-			return
-		}
-		if err := sshconfig.WriteCodespaceConfig(paths.IncludeDir, selected.Name, sshCfg); err != nil {
+		setStatus("Preparing SSH config...")
+		sshAlias, err := manager.PrepareSSH(paths, selected)
+		if err != nil {
 			showFlowError(win, err)
 			return
 		}
 
-		// Configure editor-specific settings.
 		nickname := editor.ResolveNickname(
 			target.ZedNickname, target.DisplayName, selected.DisplayName, resolvedName,
 		)
-		if err := ed.ConfigureConnection(sshAlias, target.WorkspacePath, nickname, target.UploadBinaryOverSSH); err != nil {
+		if err := ed.ConfigureConnection(sshAlias, workspacePath, nickname, target.UploadBinaryOverSSH); err != nil {
 			showFlowError(win, err)
 			return
 		}
 
-		// Launch editor.
 		setStatus(fmt.Sprintf("Launching %s...", ed.Name()))
-		if err := ed.LaunchRemote(sshAlias, target.WorkspacePath); err != nil {
+		if err := ed.LaunchRemote(sshAlias, workspacePath); err != nil {
 			showFlowError(win, err)
 			return
 		}
@@ -213,4 +218,22 @@ func (d *Daemon) runLaunchFlow(win fyne.Window, target config.Target, resolvedNa
 		fyne.Do(func() { win.Close() })
 		d.rebuildTrayMenu()
 	}()
+}
+
+func (d *Daemon) managerForTarget(target config.Target) (provider.Manager, error) {
+	if target.Coder != nil {
+		return provider.NewCoderManager(d.Cfg), nil
+	}
+	return provider.NewGitHubManager(d.Runner), nil
+}
+
+func (d *Daemon) managerForProvider(providerName string) (provider.Manager, error) {
+	switch providerName {
+	case provider.NameGitHub:
+		return provider.NewGitHubManager(d.Runner), nil
+	case provider.NameCoder:
+		return provider.NewCoderManager(d.Cfg), nil
+	default:
+		return nil, fmt.Errorf("unknown provider %q", providerName)
+	}
 }
