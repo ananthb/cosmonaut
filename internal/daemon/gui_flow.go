@@ -19,6 +19,7 @@ import (
 //   - no args: show the window with sidebar
 //   - target name or owner/repo: open tree, expand that repo
 //   - "--workspace", name, "--provider", provider, target: direct launch
+//   - "--detail", "--workspace", name, "--provider", provider, target: show detail
 func (d *Daemon) showGUI(args ...string) {
 	if d.app == nil {
 		log.Println("gui: app not initialized")
@@ -27,8 +28,11 @@ func (d *Daemon) showGUI(args ...string) {
 
 	// Parse args.
 	var targetArg, workspaceName, providerName string
+	detailOnly := false
 	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--detail":
+			detailOnly = true
 		case args[i] == "--workspace" && i+1 < len(args):
 			workspaceName = args[i+1]
 			i++
@@ -56,6 +60,14 @@ func (d *Daemon) showGUI(args ...string) {
 				return
 			}
 			uw.win.Show()
+			if detailOnly {
+				if ws.Provider == provider.NameCoder {
+					uw.showCoderWorkspaceDetail(*ws)
+				} else {
+					uw.showWorkspaceDetail(ws.Provider, ws.Name)
+				}
+				return
+			}
 			d.runLaunchFlow(uw.win, target, resolvedName, ws)
 		} else if targetArg != "" {
 			target, _ := d.resolveGUITarget(targetArg)

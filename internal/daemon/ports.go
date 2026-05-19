@@ -9,6 +9,7 @@ import (
 	"fyne.io/fyne/v2"
 
 	"github.com/linuskendall/cosmonaut/internal/codespace"
+	"github.com/linuskendall/cosmonaut/internal/provider"
 )
 
 type portCacheEntry struct {
@@ -130,22 +131,30 @@ func (d *Daemon) notify(msg string) {
 }
 
 func (d *Daemon) startLocalPortForward(codespaceName string, remotePort, localPort int) error {
+	return d.startWorkspacePortForward(provider.NameGitHub, codespaceName, "tcp", remotePort, localPort)
+}
+
+func (d *Daemon) startWorkspacePortForward(providerName, workspaceName, protocol string, remotePort, localPort int) error {
 	if d.forwards == nil {
 		d.forwards = newPortForwardManager()
 	}
-	if err := d.forwards.Start(codespaceName, remotePort, localPort); err != nil {
+	if err := d.forwards.StartProtocol(providerName, workspaceName, protocol, remotePort, localPort); err != nil {
 		return err
 	}
-	d.notify(fmt.Sprintf("Forwarding localhost:%d to %s:%d", localPort, codespaceName, remotePort))
+	d.notify(fmt.Sprintf("Forwarding localhost:%d to %s:%d", localPort, workspaceName, remotePort))
 	d.rebuildTrayMenu()
 	return nil
 }
 
 func (d *Daemon) stopLocalPortForward(codespaceName string, remotePort, localPort int) {
+	d.stopWorkspacePortForward(provider.NameGitHub, codespaceName, "tcp", remotePort, localPort)
+}
+
+func (d *Daemon) stopWorkspacePortForward(providerName, workspaceName, protocol string, remotePort, localPort int) {
 	if d.forwards == nil {
 		return
 	}
-	if d.forwards.Stop(codespaceName, remotePort, localPort) {
+	if d.forwards.StopProtocol(providerName, workspaceName, protocol, remotePort, localPort) {
 		d.notify(fmt.Sprintf("Stopped localhost:%d forward", localPort))
 		d.rebuildTrayMenu()
 	}

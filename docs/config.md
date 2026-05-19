@@ -39,7 +39,15 @@ The default path is `cosmonaut.config.json` in the current directory for the CLI
         "parameters": {
           "repo": "my-org/my-repo"
         },
-        "stopAfter": "8h"
+        "stopAfter": "8h",
+        "portForwards": [
+          {
+            "label": "app",
+            "localPort": 8080,
+            "remotePort": 3000,
+            "protocol": "tcp"
+          }
+        ]
       }
     }
   }
@@ -75,7 +83,18 @@ The default path is `cosmonaut.config.json` in the current directory for the CLI
 | `zedNickname` | string | | Friendly name in Zed's remote project list |
 | `autoStop` | string | | Reserved for a future auto-stop feature; currently parsed but not acted on |
 | `preWarm` | string | | Time-of-day to pre-warm codespace (applet only, e.g. `08:00`) |
-| `coder` | object | | Coder-specific target settings: `template`, `workspaceName`, `parameters`, `stopAfter`, `organization` |
+| `coder` | object | | Coder-specific target settings: `template`, `workspaceName`, `parameters`, `stopAfter`, `organization`, `portForwards` |
+
+### Coder port forwards
+
+Configured Coder port forwards appear in the applet workspace detail screen and tray menu. They run `coder port-forward <workspace> --tcp <localPort>:<remotePort>` by default. Set `protocol` to `udp` to use `--udp`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `label` | string | | Friendly label shown in the applet |
+| `localPort` | number | | Localhost port to bind; defaults to `remotePort` when omitted |
+| `remotePort` | number | yes | Port inside the Coder workspace |
+| `protocol` | string | | `tcp` (default) or `udp` |
 
 ## Daemon fields
 

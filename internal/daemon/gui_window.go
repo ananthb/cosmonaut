@@ -326,12 +326,22 @@ func (uw *unifiedWindow) showCoderSummary() {
 	title := widget.NewLabel("Coder Workspaces")
 	title.TextStyle = fyne.TextStyle{Bold: true}
 	info := widget.NewLabel(fmt.Sprintf("%d workspace(s)", len(all)))
+	var refreshBtn *widget.Button
+	refreshBtn = widget.NewButton("Refresh workspaces", func() {
+		refreshBtn.Disable()
+		uw.daemon.refreshCoderWorkspacesAsync(func() {
+			uw.loadRepos()
+			uw.applyFilter()
+			uw.tree.Refresh()
+			uw.showCoderSummary()
+		})
+	})
 	createBtn := widget.NewButton("Create new Coder workspace", func() {
 		uw.showCreateNewForProvider(provider.NameCoder, "")
 	})
 	uw.setContent(container.NewVBox(
 		layout.NewSpacer(),
-		container.NewCenter(container.NewVBox(title, info, createBtn)),
+		container.NewCenter(container.NewVBox(title, info, refreshBtn, createBtn)),
 		layout.NewSpacer(),
 	))
 }

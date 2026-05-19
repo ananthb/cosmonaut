@@ -9,6 +9,7 @@ import (
 	"fyne.io/fyne/v2/driver/desktop"
 
 	"github.com/linuskendall/cosmonaut/internal/codespace"
+	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/history"
 	"github.com/linuskendall/cosmonaut/internal/provider"
 )
@@ -39,6 +40,9 @@ func (d *Daemon) buildTrayMenu() *fyne.Menu {
 	}
 	items = append(items, fyne.NewMenuItem("Launch...", func() {
 		go d.showGUI()
+	}))
+	items = append(items, fyne.NewMenuItem("Refresh workspaces", func() {
+		go d.poll()
 	}))
 
 	// Preferences.
@@ -87,7 +91,7 @@ func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 
 func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {
 	workspaces := filterWorkspacesByProvider(d.Workspaces(), provider.NameCoder)
-	if len(workspaces) == 0 {
+	if len(workspaces) == 0 && (d.Cfg == nil || d.Cfg.EffectiveWorkspaceProvider() != provider.NameCoder) {
 		return nil
 	}
 
@@ -99,18 +103,98 @@ func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {
 		return workspaceLabel(workspaces[i]) < workspaceLabel(workspaces[j])
 	})
 
-	items := make([]*fyne.MenuItem, 0, len(workspaces))
+	items := make([]*fyne.MenuItem, 0, len(workspaces)+3)
+	items = append(items, fyne.NewMenuItem("Refresh workspaces", func() {
+		d.refreshCoderWorkspacesAsync(nil)
+	}))
+	items = append(items, fyne.NewMenuItemSeparator())
+	if len(workspaces) == 0 {
+		items = append(items, disabledMenuItem("No Coder workspaces"))
+		items = append(items, fyne.NewMenuItem("Create new...", func() {
+			go d.showGUI()
+		}))
+		item := fyne.NewMenuItem("Coder", nil)
+		item.ChildMenu = fyne.NewMenu("", items...)
+		return item
+	}
 	for _, ws := range workspaces {
 		ws := ws
 		label := fmt.Sprintf("%s %s", stateIcon(ws.State), ws.Name)
-		items = append(items, fyne.NewMenuItem(label, func() {
+		item := fyne.NewMenuItem(label, func() {
 			_, resolvedName := guiTargetForCoderWorkspace(d.Cfg, ws)
 			go d.showGUI("--workspace", ws.Name, "--provider", provider.NameCoder, resolvedName)
-		}))
+		})
+		item.ChildMenu = d.coderWorkspaceActionsMenu(ws)
+		items = append(items, item)
 	}
 	item := fyne.NewMenuItem("Coder", nil)
 	item.ChildMenu = fyne.NewMenu("", items...)
 	return item
+}
+
+func (d *Daemon) coderWorkspaceActionsMenu(ws provider.Workspace) *fyne.Menu {
+	target, resolvedName := guiTargetForCoderWorkspace(d.Cfg, ws)
+	items := []*fyne.MenuItem{
+		fyne.NewMenuItem("Open in editor", func() {
+			go d.showGUI("--workspace", ws.Name, "--provider", provider.NameCoder, resolvedName)
+		}),
+		fyne.NewMenuItem("Workspace settings...", func() {
+			go d.showGUI("--detail", "--workspace", ws.Name, "--provider", provider.NameCoder, resolvedName)
+		}),
+		fyne.NewMenuItemSeparator(),
+	}
+	if target.Coder == nil || len(target.Coder.PortForwards) == 0 {
+		items = append(items, disabledMenuItem("No configured ports"))
+		return fyne.NewMenu("", items...)
+	}
+	for _, pf := range target.Coder.PortForwards {
+		pf := pf
+		remotePort := pf.RemotePort
+		localPort := pf.LocalPort
+		if localPort == 0 {
+			localPort = remotePort
+		}
+		item := fyne.NewMenuItem("Port "+coderPortForwardLabel(pf), nil)
+		item.ChildMenu = d.coderPortActionsMenu(ws.Name, pf)
+		items = append(items, item)
+	}
+	return fyne.NewMenu("", items...)
+}
+
+func (d *Daemon) coderPortActionsMenu(workspaceName string, pf config.PortForward) *fyne.Menu {
+	remotePort := pf.RemotePort
+	localPort := pf.LocalPort
+	if localPort == 0 {
+		localPort = remotePort
+	}
+	protocol := normalizePortForwardProtocol(pf.Protocol)
+
+	var items []*fyne.MenuItem
+	if d.forwards != nil && d.forwards.IsActiveProtocol(provider.NameCoder, workspaceName, protocol, remotePort, localPort) {
+		items = append(items, fyne.NewMenuItem(fmt.Sprintf("Stop localhost %d", localPort), func() {
+			d.stopWorkspacePortForward(provider.NameCoder, workspaceName, protocol, remotePort, localPort)
+		}))
+	} else {
+		items = append(items, fyne.NewMenuItem(fmt.Sprintf("Forward localhost %d", localPort), func() {
+			go func() {
+				if err := d.startWorkspacePortForward(provider.NameCoder, workspaceName, protocol, remotePort, localPort); err != nil {
+					d.notify(err.Error())
+				}
+			}()
+		}))
+	}
+	return fyne.NewMenu("", items...)
+}
+
+func coderPortForwardLabel(pf config.PortForward) string {
+	if pf.Label != "" {
+		return fmt.Sprintf("%s (%d)", pf.Label, pf.RemotePort)
+	}
+	protocol := normalizePortForwardProtocol(pf.Protocol)
+	if protocol != "tcp" {
+		return fmt.Sprintf("%d (%s)", pf.RemotePort, protocol)
+	}
+	return fmt.Sprintf("%d", pf.RemotePort)
 }
 
 // codespaceSubmenu builds a submenu showing codespaces for a repo.
@@ -157,6 +241,9 @@ func (d *Daemon) codespaceActionsMenu(cs codespace.Codespace, launchArgs string)
 		fyne.NewMenuItem("Open in editor", func() {
 			go d.showGUI("--workspace", cs.Name, "--provider", "github", launchArgs)
 		}),
+		fyne.NewMenuItem("Workspace settings...", func() {
+			go d.showGUI("--detail", "--workspace", cs.Name, "--provider", "github", launchArgs)
+		}),
 		fyne.NewMenuItem("Refresh ports", func() {
 			d.refreshPortsAsync(cs.Name, nil)
 		}),
@@ -199,7 +286,7 @@ func (d *Daemon) portActionsMenu(codespaceName string, port codespace.Port) *fyn
 	items = append(items, fyne.NewMenuItemSeparator())
 	remotePort := port.SourcePort
 	localPort := port.SourcePort
-	if d.forwards != nil && d.forwards.IsActive(codespaceName, remotePort, localPort) {
+	if d.forwards != nil && d.forwards.IsActive(provider.NameGitHub, codespaceName, remotePort, localPort) {
 		items = append(items, fyne.NewMenuItem(fmt.Sprintf("Stop localhost %d", localPort), func() {
 			d.stopLocalPortForward(codespaceName, remotePort, localPort)
 		}))

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/sshconfig"
@@ -137,6 +138,7 @@ func (m *CoderManager) CreateWorkspace(target config.Target, interactive bool) (
 		args = append(args, "--org", org)
 	}
 	args = append(args, "--template", target.Coder.Template)
+	args = append(args, "--use-parameter-defaults")
 	if target.Coder.StopAfter != "" {
 		args = append(args, "--stop-after", target.Coder.StopAfter)
 	}
@@ -156,13 +158,17 @@ func (m *CoderManager) StartWorkspace(workspace *Workspace) (*Workspace, error) 
 	if workspace == nil {
 		return nil, fmt.Errorf("workspace is nil")
 	}
-	if strings.EqualFold(workspace.State, "running") || strings.EqualFold(workspace.State, "available") {
+	if isCoderReadyState(workspace.State) {
 		return workspace, nil
 	}
-	if _, err := m.run("start", "--yes", workspace.Name); err != nil {
-		return nil, err
+	if !isCoderTransitionalState(workspace.State) {
+		if _, err := m.run("start", "--yes", workspace.Name); err != nil {
+			return nil, err
+		}
 	}
-	return m.ResolveWorkspace(workspace.Name)
+	return m.waitForWorkspaceState(workspace.Name, 60*time.Second, func(state string) bool {
+		return isCoderReadyState(state) || isCoderTransitionalState(state)
+	})
 }
 
 func (m *CoderManager) DeleteWorkspace(name string) error {
@@ -170,11 +176,13 @@ func (m *CoderManager) DeleteWorkspace(name string) error {
 }
 
 func (m *CoderManager) EnsureReachable(workspace *Workspace) error {
-	latest, err := m.ResolveWorkspace(workspace.Name)
+	latest, err := m.waitForWorkspaceState(workspace.Name, 90*time.Second, func(state string) bool {
+		return isCoderReadyState(state) || isCoderTransitionalState(state)
+	})
 	if err != nil {
 		return err
 	}
-	if strings.EqualFold(latest.State, "ready") || strings.EqualFold(latest.State, "running") || strings.EqualFold(latest.State, "connected") {
+	if isCoderReadyState(latest.State) {
 		return nil
 	}
 	return fmt.Errorf("coder workspace %q is not ready yet (state: %s)", workspace.Name, latest.State)
@@ -294,4 +302,44 @@ func sortedKeys(maybe map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func (m *CoderManager) waitForWorkspaceState(name string, timeout time.Duration, allow func(string) bool) (*Workspace, error) {
+	deadline := time.Now().Add(timeout)
+	var last *Workspace
+	for {
+		ws, err := m.ResolveWorkspace(name)
+		if err != nil {
+			return nil, err
+		}
+		last = ws
+		if isCoderReadyState(ws.State) {
+			return ws, nil
+		}
+		if !allow(ws.State) {
+			return ws, nil
+		}
+		if time.Now().After(deadline) {
+			return last, nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func isCoderReadyState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "ready", "running", "connected", "started", "available":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCoderTransitionalState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "created", "creating", "pending", "starting", "start", "initializing":
+		return true
+	default:
+		return false
+	}
 }

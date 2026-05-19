@@ -64,6 +64,14 @@ type CoderTargetConfig struct {
 	Parameters    map[string]string `json:"parameters,omitempty"`
 	StopAfter     string            `json:"stopAfter,omitempty"`
 	Organization  string            `json:"organization,omitempty"`
+	PortForwards  []PortForward     `json:"portForwards,omitempty"`
+}
+
+type PortForward struct {
+	Label      string `json:"label,omitempty"`
+	LocalPort  int    `json:"localPort,omitempty"`
+	RemotePort int    `json:"remotePort,omitempty"`
+	Protocol   string `json:"protocol,omitempty"`
 }
 
 var (
@@ -159,7 +167,7 @@ var TargetFieldDocs = []FieldDoc{
 	{"zedNickname", "string", false, "Friendly name shown in Zed's remote project list"},
 	{"autoStop", "string", false, "Auto-stop codespace after idle duration (e.g. 30m)"},
 	{"preWarm", "string", false, "Time-of-day to pre-warm codespace (e.g. 08:00)"},
-	{"coder", "object", false, "Coder-specific target settings: template, workspaceName, parameters, stopAfter, organization"},
+	{"coder", "object", false, "Coder-specific target settings: template, workspaceName, parameters, stopAfter, organization, portForwards"},
 }
 
 // DaemonFieldDocs is the authoritative documentation for DaemonConfig fields.

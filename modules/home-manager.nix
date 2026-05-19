@@ -123,6 +123,34 @@ let
               default = null;
               description = "Override the default Coder organization for this target.";
             };
+
+            portForwards = lib.mkOption {
+              type = lib.types.listOf (lib.types.submodule ({ ... }: {
+                options = {
+                  label = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Friendly label shown for this Coder port forward.";
+                  };
+                  localPort = lib.mkOption {
+                    type = lib.types.nullOr lib.types.int;
+                    default = null;
+                    description = "Localhost port to bind. Defaults to remotePort when omitted.";
+                  };
+                  remotePort = lib.mkOption {
+                    type = lib.types.int;
+                    description = "Port inside the Coder workspace.";
+                  };
+                  protocol = lib.mkOption {
+                    type = lib.types.nullOr (lib.types.enum [ "tcp" "udp" ]);
+                    default = null;
+                    description = "Protocol to forward. Defaults to tcp.";
+                  };
+                };
+              }));
+              default = [ ];
+              description = "Coder ports exposed in the applet via coder port-forward.";
+            };
           };
         }));
         default = null;
@@ -150,6 +178,7 @@ let
       coder = if target.coder == null then null else filterNulls {
         inherit (target.coder) template workspaceName stopAfter organization;
         parameters = if target.coder.parameters == { } then null else target.coder.parameters;
+        portForwards = if target.coder.portForwards == [ ] then null else target.coder.portForwards;
       };
     }) cfg.targets;
     daemon = lib.optionalAttrs cfg.daemon.enable (filterNulls {
