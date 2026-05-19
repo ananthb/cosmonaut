@@ -67,7 +67,7 @@ jobs:
 
   macos:
     name: macOS
-    runs-on: macos-latest
+    runs-on: macos-15
     permissions:
       contents: read
       id-token: write
@@ -80,11 +80,24 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Verify macOS ARM runner
+        run: |
+          test "$(uname -m)" = "arm64"
+          test "$(go env GOHOSTARCH)" = "arm64"
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: '~> v2'
           args: release --clean --config .goreleaser.darwin.yaml
+
+      - name: Verify macOS ARM artifacts
+        run: |
+          tmp="$(mktemp -d)"
+          tar -xzf build/cosmonaut-macos-arm64.tar.gz -C "$tmp"
+          file "$tmp/Cosmonaut.app/Contents/MacOS/cosmonaut"
+          file "$tmp/Cosmonaut.app/Contents/MacOS/cosmonaut" | grep -q 'arm64'
+          hdiutil imageinfo build/cosmonaut-macos-arm64.dmg >/dev/null
 
       - uses: actions/upload-artifact@v4
         with:

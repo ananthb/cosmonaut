@@ -33,7 +33,7 @@ jobs:
         include:
           - os: ubuntu-latest
             config: .goreleaser.linux.yaml
-          - os: macos-latest
+          - os: macos-15
             config: .goreleaser.darwin.yaml
     runs-on: ${{ matrix.os }}
     steps:
@@ -44,6 +44,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      - name: Verify macOS ARM runner
+        if: runner.os == 'macOS'
+        run: |
+          test "$(uname -m)" = "arm64"
+          test "$(go env GOHOSTARCH)" = "arm64"
 
       - name: Install Linux build deps
         if: runner.os == 'Linux'

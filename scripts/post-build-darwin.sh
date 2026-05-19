@@ -29,6 +29,11 @@ if [ ! -x "$binary" ]; then
   echo "error: $binary is not an executable file" >&2
   exit 1
 fi
+if ! file "$binary" | grep -q 'Mach-O.*arm64'; then
+  echo "error: $binary is not a macOS arm64 executable:" >&2
+  file "$binary" >&2
+  exit 1
+fi
 
 # Sanity-check: the binary should reference only system dylibs and
 # @rpath entries. /nix/store, /opt/homebrew, /usr/local etc. are
