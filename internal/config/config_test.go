@@ -83,7 +83,10 @@ func TestLoadCoderConfig(t *testing.T) {
 					"parameters": {
 						"repo": "acme/demo"
 					},
-					"stopAfter": "8h"
+					"stopAfter": "8h",
+					"portForwards": [
+						{"label": "app", "localPort": 8080, "remotePort": 3000, "protocol": "tcp"}
+					]
 				}
 			}
 		}
@@ -106,5 +109,8 @@ func TestLoadCoderConfig(t *testing.T) {
 	}
 	if target.Coder.Parameters["repo"] != "acme/demo" {
 		t.Fatalf("coder parameters = %+v", target.Coder.Parameters)
+	}
+	if len(target.Coder.PortForwards) != 1 || target.Coder.PortForwards[0].RemotePort != 3000 {
+		t.Fatalf("coder port forwards = %+v", target.Coder.PortForwards)
 	}
 }

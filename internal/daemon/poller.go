@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"log"
 	"time"
 
@@ -94,6 +95,42 @@ func (d *Daemon) poll() {
 	d.checkAutoStop(codespaces)
 	d.updateTrayIcon(workspaces)
 	d.rebuildTrayMenu()
+}
+
+func (d *Daemon) refreshCoderWorkspacesAsync(done func()) {
+	go func() {
+		manager := provider.NewCoderManager(d.Cfg)
+		workspaces, err := manager.ListAllWorkspaces()
+		if err != nil {
+			log.Printf("refresh(coder): %v", err)
+			if d.Cfg != nil && d.Cfg.EffectiveWorkspaceProvider() == provider.NameCoder {
+				d.SetListErr(err)
+			}
+			d.notify(fmt.Sprintf("Refreshing Coder workspaces failed: %v", err))
+		} else {
+			d.SetWorkspaces(replaceWorkspacesByProvider(d.Workspaces(), provider.NameCoder, workspaces))
+			if d.Cfg != nil && d.Cfg.EffectiveWorkspaceProvider() == provider.NameCoder {
+				d.SetListErr(nil)
+			}
+			d.notify(fmt.Sprintf("Refreshed %d Coder workspace(s)", len(workspaces)))
+		}
+		d.updateTrayIcon(d.Workspaces())
+		d.rebuildTrayMenu()
+		if done != nil {
+			fyne.Do(done)
+		}
+	}()
+}
+
+func replaceWorkspacesByProvider(current []provider.Workspace, providerName string, replacement []provider.Workspace) []provider.Workspace {
+	result := make([]provider.Workspace, 0, len(current)+len(replacement))
+	for _, ws := range current {
+		if ws.Provider != providerName {
+			result = append(result, ws)
+		}
+	}
+	result = append(result, replacement...)
+	return result
 }
 
 // updateTrayIcon switches tray icon based on aggregate workspace state.

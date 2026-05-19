@@ -21,12 +21,14 @@ import (
 	"net/url"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -421,7 +423,6 @@ func (uw *unifiedWindow) showCosmoCodespaceDetail(csName, repo string) {
 		uw.daemon.runLaunchFlow(uw.win, target, resolvedName, &workspace)
 		uw.daemon.Cfg.Editor = origEditor
 	})
-
 	sshBtn := widget.NewButton("SSH", func() {
 		go func() {
 			sshAlias := fmt.Sprintf("cs.%s.github.dev", cs.Name)
@@ -542,13 +543,13 @@ func (uw *unifiedWindow) portRow(csName, repo string, port codespace.Port) fyne.
 	remotePort := port.SourcePort
 	localPort := port.SourcePort
 	var forwardBtn *widget.Button
-	if uw.daemon.forwards != nil && uw.daemon.forwards.IsActive(csName, remotePort, localPort) {
+	if uw.daemon.forwards != nil && uw.daemon.forwards.IsActive(provider.NameGitHub, csName, remotePort, localPort) {
 		forwardBtn = widget.NewButton(fmt.Sprintf("Stop localhost %d", localPort), func() {
 			uw.daemon.stopLocalPortForward(csName, remotePort, localPort)
 			uw.showCosmoCodespaceDetail(csName, repo)
 		})
 	} else {
-		forwardBtn = widget.NewButton(fmt.Sprintf("Forward localhost %d:%d", remotePort, localPort), func() {
+		forwardBtn = widget.NewButton(fmt.Sprintf("Forward localhost %d", localPort), func() {
 			go func() {
 				if err := uw.daemon.startLocalPortForward(csName, remotePort, localPort); err != nil {
 					uw.daemon.notify(err.Error())
@@ -758,6 +759,22 @@ func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
 		uw.daemon.runLaunchFlow(uw.win, target, resolvedName, &workspace)
 		uw.daemon.Cfg.Editor = origEditor
 	})
+	var refreshBtn *widget.Button
+	refreshBtn = widget.NewButton("Refresh", func() {
+		refreshBtn.Disable()
+		uw.daemon.refreshCoderWorkspacesAsync(func() {
+			uw.loadRepos()
+			uw.applyFilter()
+			uw.tree.Refresh()
+			for _, latest := range uw.daemon.Workspaces() {
+				if latest.Provider == provider.NameCoder && latest.Name == ws.Name {
+					uw.showCoderWorkspaceDetail(latest)
+					return
+				}
+			}
+			uw.showCoderSummary()
+		})
+	})
 
 	nameVal := widget.NewLabel(ws.Name)
 	nameVal.TextStyle = fyne.TextStyle{Monospace: true}
@@ -777,17 +794,241 @@ func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
 		widget.NewFormItem("SSH host", sshHostVal),
 		widget.NewFormItem("Path", pathVal),
 	)
+	portTargetName := coderPortTargetName(uw.daemon.Cfg, ws, resolvedName)
+	portTarget := target
+	if uw.daemon.Cfg != nil {
+		if configured, ok := uw.daemon.Cfg.Targets[portTargetName]; ok {
+			portTarget = applyWorkspaceDefaults(configured, ws)
+		}
+	}
+	ports := uw.buildCoderPortsSection(ws, portTarget, portTargetName)
 
 	body := container.NewVBox(
 		statusRow,
 		heroTitle,
 		subtitle,
 		widget.NewSeparator(),
-		container.NewHBox(openBtn, editorSel),
+		container.NewHBox(openBtn, editorSel, layout.NewSpacer(), refreshBtn),
 		widget.NewSeparator(),
 		info,
+		widget.NewSeparator(),
+		ports,
 	)
 	uw.setContent(container.NewPadded(body))
+}
+
+func (uw *unifiedWindow) buildCoderPortsSection(ws provider.Workspace, target config.Target, targetName string) fyne.CanvasObject {
+	title := caption("CONFIGURED PORT FORWARDS")
+	addBtn := primaryButton("Add port forward", func() {
+		uw.showCoderPortDialog(ws, target, targetName, -1, nil)
+	})
+
+	rows := []fyne.CanvasObject{
+		container.NewHBox(title, layout.NewSpacer(), addBtn),
+	}
+
+	if target.Coder == nil || len(target.Coder.PortForwards) == 0 {
+		rows = append(rows, widget.NewLabel("No configured Coder port forwards."))
+		return container.NewVBox(rows...)
+	}
+	for i, pf := range target.Coder.PortForwards {
+		rows = append(rows, uw.coderPortRow(ws, targetName, i, pf))
+	}
+	return container.NewVBox(rows...)
+}
+
+func (uw *unifiedWindow) coderPortRow(ws provider.Workspace, targetName string, index int, pf config.PortForward) fyne.CanvasObject {
+	protocol := normalizePortForwardProtocol(pf.Protocol)
+	remotePort := pf.RemotePort
+	localPort := pf.LocalPort
+	if localPort == 0 {
+		localPort = remotePort
+	}
+	label := pf.Label
+	if label == "" {
+		label = fmt.Sprintf("%s %d:%d", strings.ToUpper(protocol), localPort, remotePort)
+	}
+	title := widget.NewLabel(label)
+	title.TextStyle = fyne.TextStyle{Bold: true}
+	detail := widget.NewLabel(fmt.Sprintf("localhost:%d -> %s:%d", localPort, ws.Name, remotePort))
+	detail.TextStyle = fyne.TextStyle{Monospace: true}
+
+	var forwardBtn *widget.Button
+	if uw.daemon.forwards != nil && uw.daemon.forwards.IsActiveProtocol(provider.NameCoder, ws.Name, protocol, remotePort, localPort) {
+		forwardBtn = widget.NewButton(fmt.Sprintf("Stop localhost %d", localPort), func() {
+			uw.daemon.stopWorkspacePortForward(provider.NameCoder, ws.Name, protocol, remotePort, localPort)
+			uw.showCoderWorkspaceDetail(ws)
+		})
+	} else {
+		forwardBtn = widget.NewButton(fmt.Sprintf("Forward localhost %d:%d", remotePort, localPort), func() {
+			go func() {
+				if err := uw.daemon.startWorkspacePortForward(provider.NameCoder, ws.Name, protocol, remotePort, localPort); err != nil {
+					uw.daemon.notify(err.Error())
+				}
+				fyne.Do(func() { uw.showCoderWorkspaceDetail(ws) })
+			}()
+		})
+	}
+
+	editBtn := widget.NewButton("Edit", func() {
+		uw.showCoderPortDialog(ws, config.Target{}, targetName, index, &pf)
+	})
+	removeBtn := widget.NewButton("Remove", func() {
+		if err := uw.removeCoderPortForward(targetName, index); err != nil {
+			dialog.ShowError(err, uw.win)
+			return
+		}
+		uw.showCoderWorkspaceDetail(ws)
+	})
+	left := container.NewVBox(title, detail)
+	actions := container.NewHBox(forwardBtn, editBtn, removeBtn)
+	return surfaceCard(container.NewBorder(nil, nil, nil, actions, left))
+}
+
+func (uw *unifiedWindow) showCoderPortDialog(ws provider.Workspace, target config.Target, targetName string, index int, existing *config.PortForward) {
+	labelEntry := widget.NewEntry()
+	labelEntry.PlaceHolder = "app"
+	localEntry := widget.NewEntry()
+	localEntry.PlaceHolder = "8080"
+	remoteEntry := widget.NewEntry()
+	remoteEntry.PlaceHolder = "3000"
+	protocolSelect := widget.NewSelect([]string{"tcp", "udp"}, nil)
+	protocolSelect.Selected = "tcp"
+	if existing != nil {
+		labelEntry.SetText(existing.Label)
+		if existing.LocalPort > 0 {
+			localEntry.SetText(strconv.Itoa(existing.LocalPort))
+		}
+		if existing.RemotePort > 0 {
+			remoteEntry.SetText(strconv.Itoa(existing.RemotePort))
+		}
+		protocolSelect.Selected = normalizePortForwardProtocol(existing.Protocol)
+	}
+
+	items := []*widget.FormItem{
+		widget.NewFormItem("Label", labelEntry),
+		widget.NewFormItem("Local port", localEntry),
+		widget.NewFormItem("Remote port", remoteEntry),
+		widget.NewFormItem("Protocol", protocolSelect),
+	}
+	title := "Add Coder port forward"
+	if existing != nil {
+		title = "Edit Coder port forward"
+	}
+	dialog.ShowForm(title, "Save", "Cancel", items, func(ok bool) {
+		if !ok {
+			return
+		}
+		remotePort, err := strconv.Atoi(strings.TrimSpace(remoteEntry.Text))
+		if err != nil || remotePort <= 0 || remotePort > 65535 {
+			dialog.ShowError(fmt.Errorf("remote port must be between 1 and 65535"), uw.win)
+			return
+		}
+		localPort := remotePort
+		if strings.TrimSpace(localEntry.Text) != "" {
+			localPort, err = strconv.Atoi(strings.TrimSpace(localEntry.Text))
+			if err != nil || localPort <= 0 || localPort > 65535 {
+				dialog.ShowError(fmt.Errorf("local port must be between 1 and 65535"), uw.win)
+				return
+			}
+		}
+		protocol := normalizePortForwardProtocol(protocolSelect.Selected)
+		if protocol != "tcp" && protocol != "udp" {
+			protocol = "tcp"
+		}
+
+		pf := config.PortForward{
+			Label:      strings.TrimSpace(labelEntry.Text),
+			LocalPort:  localPort,
+			RemotePort: remotePort,
+			Protocol:   protocol,
+		}
+		var saveErr error
+		if existing == nil {
+			saveErr = uw.addCoderPortForward(targetName, ws, target, pf)
+		} else {
+			saveErr = uw.updateCoderPortForward(targetName, index, pf)
+		}
+		if saveErr != nil {
+			dialog.ShowError(saveErr, uw.win)
+			return
+		}
+		uw.showCoderWorkspaceDetail(ws)
+	}, uw.win)
+}
+
+func (uw *unifiedWindow) addCoderPortForward(targetName string, ws provider.Workspace, target config.Target, pf config.PortForward) error {
+	if uw.daemon.Cfg == nil {
+		return fmt.Errorf("no config is loaded, so port forwards cannot be saved")
+	}
+	if uw.daemon.Cfg.Targets == nil {
+		uw.daemon.Cfg.Targets = map[string]config.Target{}
+	}
+	targetName = strings.TrimSpace(targetName)
+	if targetName == "" {
+		targetName = ws.Name
+	}
+	current, ok := uw.daemon.Cfg.Targets[targetName]
+	if !ok {
+		current = target
+	}
+	current = applyWorkspaceDefaults(current, ws)
+	if current.Coder == nil {
+		current.Coder = &config.CoderTargetConfig{}
+	}
+	current.Coder.WorkspaceName = ws.Name
+	current.Coder.PortForwards = append(current.Coder.PortForwards, pf)
+	uw.daemon.Cfg.Targets[targetName] = current
+	uw.daemon.persistConfig()
+	return nil
+}
+
+func (uw *unifiedWindow) updateCoderPortForward(targetName string, index int, pf config.PortForward) error {
+	if uw.daemon.Cfg == nil || uw.daemon.Cfg.Targets == nil {
+		return fmt.Errorf("no config is loaded, so port forwards cannot be saved")
+	}
+	target, ok := uw.daemon.Cfg.Targets[targetName]
+	if !ok || target.Coder == nil {
+		return fmt.Errorf("coder target %q was not found in config", targetName)
+	}
+	if index < 0 || index >= len(target.Coder.PortForwards) {
+		return fmt.Errorf("port forward no longer exists")
+	}
+	target.Coder.PortForwards[index] = pf
+	uw.daemon.Cfg.Targets[targetName] = target
+	uw.daemon.persistConfig()
+	return nil
+}
+
+func (uw *unifiedWindow) removeCoderPortForward(targetName string, index int) error {
+	if uw.daemon.Cfg == nil || uw.daemon.Cfg.Targets == nil {
+		return fmt.Errorf("no config is loaded, so port forwards cannot be saved")
+	}
+	target, ok := uw.daemon.Cfg.Targets[targetName]
+	if !ok || target.Coder == nil {
+		return fmt.Errorf("coder target %q was not found in config", targetName)
+	}
+	if index < 0 || index >= len(target.Coder.PortForwards) {
+		return fmt.Errorf("port forward no longer exists")
+	}
+	target.Coder.PortForwards = append(target.Coder.PortForwards[:index], target.Coder.PortForwards[index+1:]...)
+	uw.daemon.Cfg.Targets[targetName] = target
+	uw.daemon.persistConfig()
+	return nil
+}
+
+func coderPortTargetName(cfg *config.Config, ws provider.Workspace, fallback string) string {
+	if cfg != nil {
+		for name, target := range cfg.Targets {
+			if target.Coder != nil && target.Coder.WorkspaceName == ws.Name {
+				return name
+			}
+		}
+	}
+	if strings.TrimSpace(fallback) != "" && fallback == ws.Name {
+		return fallback
+	}
+	return ws.Name
 }
 
 func (uw *unifiedWindow) showCosmoCreateNewCoder() {
@@ -881,8 +1122,10 @@ func (uw *unifiedWindow) showCosmoCreateNewCoderFromTemplates(title *canvas.Text
 	}
 
 	templateNames := make([]string, 0, len(templates))
+	templateByName := make(map[string]provider.CoderTemplate, len(templates))
 	for _, tpl := range templates {
 		templateNames = append(templateNames, tpl.Name)
+		templateByName[tpl.Name] = tpl
 	}
 
 	templateSel := widget.NewSelect(templateNames, func(string) {})
@@ -914,6 +1157,7 @@ func (uw *unifiedWindow) showCosmoCreateNewCoderFromTemplates(title *canvas.Text
 			Coder: &config.CoderTargetConfig{
 				Template:      templateSel.Selected,
 				WorkspaceName: name,
+				Organization:  templateByName[templateSel.Selected].Organization,
 			},
 		}
 		if target.WorkspacePath == "" {

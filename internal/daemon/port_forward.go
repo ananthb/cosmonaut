@@ -14,10 +14,13 @@ import (
 	"time"
 
 	"github.com/linuskendall/cosmonaut/internal/codespace"
+	"github.com/linuskendall/cosmonaut/internal/provider"
 )
 
 type portForwardKey struct {
-	Codespace  string
+	Provider   string
+	Workspace  string
+	Protocol   string
 	RemotePort int
 	LocalPort  int
 }
@@ -28,7 +31,7 @@ type managedPortForward struct {
 	output *boundedBuffer
 }
 
-// PortForwardManager supervises long-running `gh codespace ports forward`
+// PortForwardManager supervises long-running workspace port-forward
 // processes started by the daemon.
 type PortForwardManager struct {
 	mu       sync.Mutex
@@ -43,8 +46,18 @@ func newPortForwardManager() *PortForwardManager {
 	}
 }
 
-func (m *PortForwardManager) Start(codespaceName string, remotePort, localPort int) error {
-	key := portForwardKey{Codespace: codespaceName, RemotePort: remotePort, LocalPort: localPort}
+func (m *PortForwardManager) Start(providerName, workspaceName string, remotePort, localPort int) error {
+	return m.StartProtocol(providerName, workspaceName, "tcp", remotePort, localPort)
+}
+
+func (m *PortForwardManager) StartProtocol(providerName, workspaceName, protocol string, remotePort, localPort int) error {
+	key := portForwardKey{
+		Provider:   normalizePortForwardProvider(providerName),
+		Workspace:  workspaceName,
+		Protocol:   normalizePortForwardProtocol(protocol),
+		RemotePort: remotePort,
+		LocalPort:  localPort,
+	}
 	if err := validatePortForwardKey(key); err != nil {
 		return err
 	}
@@ -56,17 +69,17 @@ func (m *PortForwardManager) Start(codespaceName string, remotePort, localPort i
 	}
 	if other, ok := m.localPortOwnerLocked(localPort); ok {
 		m.mu.Unlock()
-		return fmt.Errorf("localhost port %d is already forwarded to %s:%d", localPort, other.Codespace, other.RemotePort)
+		return fmt.Errorf("localhost port %d is already forwarded to %s:%d", localPort, other.Workspace, other.RemotePort)
 	}
 	m.mu.Unlock()
 
-	if err := ensureLocalPortAvailable(localPort); err != nil {
+	if err := ensureLocalPortAvailable(key.Protocol, localPort); err != nil {
 		return err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	args := codespace.BuildPortForwardArgs(codespaceName, remotePort, localPort)
-	cmd := exec.CommandContext(ctx, "gh", args...)
+	command, args := buildPortForwardCommand(key)
+	cmd := exec.CommandContext(ctx, command, args...)
 	output := &boundedBuffer{limit: 16 * 1024}
 	cmd.Stdout = output
 	cmd.Stderr = output
@@ -115,8 +128,18 @@ func (m *PortForwardManager) Start(codespaceName string, remotePort, localPort i
 	}
 }
 
-func (m *PortForwardManager) Stop(codespaceName string, remotePort, localPort int) bool {
-	key := portForwardKey{Codespace: codespaceName, RemotePort: remotePort, LocalPort: localPort}
+func (m *PortForwardManager) Stop(providerName, workspaceName string, remotePort, localPort int) bool {
+	return m.StopProtocol(providerName, workspaceName, "tcp", remotePort, localPort)
+}
+
+func (m *PortForwardManager) StopProtocol(providerName, workspaceName, protocol string, remotePort, localPort int) bool {
+	key := portForwardKey{
+		Provider:   normalizePortForwardProvider(providerName),
+		Workspace:  workspaceName,
+		Protocol:   normalizePortForwardProtocol(protocol),
+		RemotePort: remotePort,
+		LocalPort:  localPort,
+	}
 
 	m.mu.Lock()
 	managed, ok := m.forwards[key]
@@ -146,8 +169,18 @@ func (m *PortForwardManager) StopAll() {
 	}
 }
 
-func (m *PortForwardManager) IsActive(codespaceName string, remotePort, localPort int) bool {
-	key := portForwardKey{Codespace: codespaceName, RemotePort: remotePort, LocalPort: localPort}
+func (m *PortForwardManager) IsActive(providerName, workspaceName string, remotePort, localPort int) bool {
+	return m.IsActiveProtocol(providerName, workspaceName, "tcp", remotePort, localPort)
+}
+
+func (m *PortForwardManager) IsActiveProtocol(providerName, workspaceName, protocol string, remotePort, localPort int) bool {
+	key := portForwardKey{
+		Provider:   normalizePortForwardProvider(providerName),
+		Workspace:  workspaceName,
+		Protocol:   normalizePortForwardProtocol(protocol),
+		RemotePort: remotePort,
+		LocalPort:  localPort,
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	_, ok := m.forwards[key]
@@ -164,8 +197,17 @@ func (m *PortForwardManager) localPortOwnerLocked(localPort int) (portForwardKey
 }
 
 func validatePortForwardKey(key portForwardKey) error {
-	if key.Codespace == "" {
-		return fmt.Errorf("codespace name is required")
+	if key.Provider == "" {
+		return fmt.Errorf("workspace provider is required")
+	}
+	if key.Provider != provider.NameGitHub && key.Provider != provider.NameCoder {
+		return fmt.Errorf("unsupported workspace provider %q", key.Provider)
+	}
+	if key.Workspace == "" {
+		return fmt.Errorf("workspace name is required")
+	}
+	if key.Protocol != "tcp" && key.Protocol != "udp" {
+		return fmt.Errorf("port forward protocol must be tcp or udp")
 	}
 	if key.RemotePort <= 0 || key.RemotePort > 65535 {
 		return fmt.Errorf("remote port must be between 1 and 65535")
@@ -176,11 +218,50 @@ func validatePortForwardKey(key portForwardKey) error {
 	return nil
 }
 
-func ensureLocalPortAvailable(port int) error {
+func normalizePortForwardProvider(providerName string) string {
+	if providerName == "" {
+		return provider.NameGitHub
+	}
+	return strings.ToLower(strings.TrimSpace(providerName))
+}
+
+func normalizePortForwardProtocol(protocol string) string {
+	if protocol == "" {
+		return "tcp"
+	}
+	return strings.ToLower(strings.TrimSpace(protocol))
+}
+
+func buildPortForwardCommand(key portForwardKey) (string, []string) {
+	switch key.Provider {
+	case provider.NameCoder:
+		flag := "--tcp"
+		if key.Protocol == "udp" {
+			flag = "--udp"
+		}
+		return "coder", []string{
+			"port-forward",
+			key.Workspace,
+			flag,
+			fmt.Sprintf("%d:%d", key.LocalPort, key.RemotePort),
+		}
+	default:
+		return "gh", codespace.BuildPortForwardArgs(key.Workspace, key.RemotePort, key.LocalPort)
+	}
+}
+
+func ensureLocalPortAvailable(protocol string, port int) error {
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	if normalizePortForwardProtocol(protocol) == "udp" {
+		conn, err := net.ListenPacket("udp", addr)
+		if err != nil {
+			return fmt.Errorf("localhost port %d is already in use; another process or workspace forward may already be bound to it", port)
+		}
+		return conn.Close()
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("localhost port %d is already in use; another process or codespace forward may already be bound to it", port)
+		return fmt.Errorf("localhost port %d is already in use; another process or workspace forward may already be bound to it", port)
 	}
 	return ln.Close()
 }
@@ -196,11 +277,11 @@ func friendlyPortForwardMessage(key portForwardKey, err error, detail string) st
 		strings.Contains(lower, "bind:"),
 		strings.Contains(lower, "only one usage of each socket address"),
 		strings.Contains(lower, "listen tcp"):
-		return fmt.Sprintf("localhost port %d is already in use; another process or codespace forward may already be bound to it", key.LocalPort)
+		return fmt.Sprintf("localhost port %d is already in use; another process or workspace forward may already be bound to it", key.LocalPort)
 	case msg != "":
-		return fmt.Sprintf("forwarding localhost:%d to %s:%d failed: %s", key.LocalPort, key.Codespace, key.RemotePort, msg)
+		return fmt.Sprintf("forwarding localhost:%d to %s:%d failed: %s", key.LocalPort, key.Workspace, key.RemotePort, msg)
 	default:
-		return fmt.Sprintf("forwarding localhost:%d to %s:%d failed", key.LocalPort, key.Codespace, key.RemotePort)
+		return fmt.Sprintf("forwarding localhost:%d to %s:%d failed", key.LocalPort, key.Workspace, key.RemotePort)
 	}
 }
 
