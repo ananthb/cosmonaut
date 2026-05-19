@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -185,7 +186,8 @@ func (m *CoderManager) EnsureReachable(workspace *Workspace) error {
 	if isCoderReadyState(latest.State) {
 		return nil
 	}
-	return fmt.Errorf("coder workspace %q is not ready yet (state: %s)", workspace.Name, latest.State)
+	log.Printf("coder workspace %q reported non-ready state %q; continuing because SSH may still be available", workspace.Name, latest.State)
+	return nil
 }
 
 func (m *CoderManager) PrepareSSH(paths sshconfig.SSHPaths, workspace *Workspace) (string, error) {
