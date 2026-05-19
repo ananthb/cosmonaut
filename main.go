@@ -105,6 +105,7 @@ Config file fields:
 	})
 
 	cmd.AddCommand(appletCmd(&configPath))
+	cmd.AddCommand(doctorCmd())
 
 	return cmd
 }

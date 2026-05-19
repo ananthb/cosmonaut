@@ -110,9 +110,13 @@ func (d *Daemon) runCreateAndLaunch(win fyne.Window, target config.Target, resol
 	go func() {
 		cs, err := codespace.CreateCodespace(d.Runner, target)
 		if err != nil {
+			progress.stop()
 			showFlowError(win, fmt.Errorf("creating codespace: %w", err))
 			return
 		}
+		// runLaunchFlow installs its own progress screen; stop ours so the
+		// first animation goroutine doesn't leak.
+		progress.stop()
 		d.runLaunchFlow(win, target, resolvedName, cs)
 	}()
 }
@@ -124,6 +128,7 @@ func (d *Daemon) runLaunchFlow(win fyne.Window, target config.Target, resolvedNa
 	fyne.Do(func() { win.SetContent(progress.canvas) })
 
 	go func() {
+		defer progress.stop()
 		setStatus := func(msg string) {
 			fyne.Do(func() { progress.setStatus(msg) })
 		}

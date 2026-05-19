@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"fmt"
+	"image/color"
 	"log"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/linuskendall/cosmonaut/internal/codespace"
 	"github.com/linuskendall/cosmonaut/internal/config"
+	"github.com/linuskendall/cosmonaut/internal/doctor"
 )
 
 // buildSettingsPanel builds the settings content panel for the unified window.
@@ -21,6 +24,12 @@ func (d *Daemon) buildSettingsPanel(win fyne.Window) fyne.CanvasObject {
 	heading := widget.NewLabel("Settings")
 	heading.TextStyle = fyne.TextStyle{Bold: true}
 	items = append(items, heading)
+
+	// Health checks: doctor catalog with per-check status and fix
+	// buttons. Mirrors what the main-window banner shows, but stays
+	// visible even if the user dismissed banners earlier.
+	items = append(items, d.buildHealthSection(win))
+	items = append(items, widget.NewSeparator())
 
 	// GitHub auth section.
 	items = append(items, d.buildAuthSection(win))
@@ -71,6 +80,125 @@ func (d *Daemon) showPreferences() {
 	})
 }
 
+// buildHealthSection lists every doctor check with its current status
+// and a Fix button when applicable. Even if a user dismissed the main
+// window banner, the same fix is reachable here.
+func (d *Daemon) buildHealthSection(win fyne.Window) fyne.CanvasObject {
+	heading := widget.NewLabel("Health checks")
+	heading.TextStyle = fyne.TextStyle{Bold: true}
+
+	rebuild := func() {
+		if win != nil {
+			win.SetContent(d.buildSettingsPanel(win))
+		}
+		// Also refresh the main window banner if it's open.
+		d.refreshMainWindowBanner()
+	}
+
+	rows := []fyne.CanvasObject{heading}
+	for _, c := range doctor.Catalog(d.ListErr) {
+		rows = append(rows, d.buildHealthRow(c, win, rebuild))
+	}
+	return container.NewVBox(rows...)
+}
+
+func (d *Daemon) buildHealthRow(c doctor.Check, win fyne.Window, rebuild func()) fyne.CanvasObject {
+	issue := c.Status()
+
+	var dotColor color.Color
+	var statusText string
+	switch {
+	case issue == nil:
+		dotColor = cLime
+		statusText = "OK"
+	case issue.Severity == doctor.SeverityError:
+		dotColor = cRed
+		statusText = "Error"
+	default:
+		dotColor = cOrange
+		statusText = "Warning"
+	}
+	dot := canvas.NewCircle(dotColor)
+	dot.StrokeWidth = 0
+	dot.Resize(fyne.NewSize(8, 8))
+
+	title := widget.NewLabel(c.Title)
+	title.TextStyle = fyne.TextStyle{Bold: true}
+
+	status := canvas.NewText(statusText, dotColor)
+	status.TextSize = 11
+	status.TextStyle = fyne.TextStyle{Monospace: true, Bold: true}
+
+	header := container.NewHBox(container.NewCenter(dot), title, layout.NewSpacer(), status)
+
+	var detail fyne.CanvasObject
+	if issue != nil {
+		lbl := widget.NewLabel(issue.Summary)
+		lbl.Wrapping = fyne.TextWrapWord
+		detail = lbl
+	} else {
+		// When passing, show the description so the user understands
+		// what was checked.
+		lbl := widget.NewLabel(c.Description)
+		lbl.Wrapping = fyne.TextWrapWord
+		detail = lbl
+	}
+
+	var actions fyne.CanvasObject
+	if issue != nil {
+		var btn *widget.Button
+		switch {
+		case c.HasInProcessFix():
+			btn = primaryButton("Fix", func() {
+				go func() {
+					if err := c.Fix(); err != nil {
+						fyne.Do(func() {
+							dialog.ShowError(fmt.Errorf("fix %s: %w", c.ID, err), win)
+						})
+						return
+					}
+					fyne.Do(rebuild)
+				}()
+			})
+		case c.HasTerminalFix():
+			btn = primaryButton("Fix in terminal", func() {
+				cmd := c.FixCommand() + `; echo; echo "Press enter to close"; read _`
+				go openCommandInTerminal(cmd)
+			})
+		}
+		recheckBtn := widget.NewButton("Re-check", func() { rebuild() })
+		row := container.NewHBox(layout.NewSpacer())
+		if btn != nil {
+			row.Add(btn)
+		}
+		row.Add(recheckBtn)
+		// If the user previously dismissed the banner, surface a way
+		// to bring it back.
+		if d.IsDismissed(c.ID) {
+			restoreBtn := widget.NewButton("Show banner again", func() {
+				d.UndismissCheck(c.ID)
+				rebuild()
+			})
+			row.Add(restoreBtn)
+		}
+		actions = row
+	}
+
+	if actions == nil {
+		return container.NewPadded(container.NewVBox(header, detail))
+	}
+	return container.NewPadded(container.NewVBox(header, detail, actions))
+}
+
+// refreshMainWindowBanner re-renders the top banner of an open main
+// window if there is one, so a fix applied (or banner restored) from
+// the Settings page is reflected immediately.
+func (d *Daemon) refreshMainWindowBanner() {
+	if uw := d.activeUnifiedWindow(); uw != nil {
+		uw.refreshBanner()
+	}
+}
+
 func (d *Daemon) buildAuthSection(win fyne.Window) fyne.CanvasObject {
 	authed := codespace.EnsureGHAuth(d.Runner) == nil
 
@@ -99,7 +227,7 @@ func (d *Daemon) buildAuthSection(win fyne.Window) fyne.CanvasObject {
 		actionBtn = widget.NewButton("Remove auth", func() {
 			actionBtn.Disable()
 			go func() {
-				_, err := d.Runner.Run([]string{"auth", "logout", "--hostname", "github.com", "--yes"})
+				_, err := d.Runner.Run([]string{"auth", "logout", "--hostname", "github.com"})
 				fyne.Do(func() {
 					if err != nil {
 						log.Printf("auth logout: %v", err)

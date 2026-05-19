@@ -208,6 +208,45 @@ in
 
     programs.ssh.includes = [ "~/.ssh/cosmonaut/*.conf" ];
 
+    # Warn (don't fail) when programs.ssh would render a bare `Host *`
+    # rule into ~/.ssh/config. Such a rule matches codespace hosts
+    # (cs.* / cs-*) and, when paired with an IdentityFile pointing at a
+    # YubiKey/SK key, breaks `gh codespace ssh` whenever the device is
+    # unplugged. The same check runs at runtime via `cosmonaut doctor`.
+    warnings =
+      let
+        ssh = config.programs.ssh;
+        matchBlocksKeys = lib.attrNames (ssh.matchBlocks or { });
+        # matchBlocks key is a literal Host pattern, so a key of "*"
+        # alone is the unscoped catch-all. Keys like "* !cs-* !cs.*"
+        # already exclude codespace hosts and are fine.
+        bareStarMatchBlock = lib.any (k: k == "*") matchBlocksKeys;
+        # extraConfig: any line that is exactly `Host *` (canonical case,
+        # optional leading whitespace) is a bare catch-all.
+        bareStarLineRe = "[[:space:]]*Host[[:space:]]+\\*[[:space:]]*";
+        extraConfigLines = lib.splitString "\n" (ssh.extraConfig or "");
+        bareStarInExtraConfig =
+          lib.any (l: builtins.match bareStarLineRe l != null) extraConfigLines;
+        msg = ''
+          cosmonaut: programs.ssh has a bare `Host *` rule that also matches
+          codespace hosts (cs.* and cs-*). When that block sets an IdentityFile
+          pointing at a YubiKey/SK key, `gh codespace ssh` and cosmonaut's
+          editor launch will fail when the device is unplugged.
+
+          Fix: replace the catch-all pattern with `* !cs-* !cs.*` so codespace
+          hosts skip the rule. For matchBlocks, change the attribute key:
+
+              matchBlocks."* !cs-* !cs.*" = { ... };
+
+          For extraConfig, change the Host line:
+
+              Host * !cs-* !cs.*
+
+          Run `cosmonaut doctor` to re-check at runtime.
+        '';
+      in
+      lib.optional (bareStarMatchBlock || bareStarInExtraConfig) msg;
+
     home.file.".ssh/cosmonaut/.keep".text = "";
 
     # Copy .app bundle into ~/Applications on activation.

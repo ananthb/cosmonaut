@@ -35,8 +35,10 @@ func (d *Daemon) poll() {
 	codespaces, err := codespace.ListAllCodespaces(d.Runner)
 	if err != nil {
 		log.Printf("poll: %v", err)
+		d.SetListErr(err)
 		return
 	}
+	d.SetListErr(nil)
 
 	log.Printf("poll: fetched %d codespaces", len(codespaces))
 

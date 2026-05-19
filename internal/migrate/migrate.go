@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/adrg/xdg"
+
+	"github.com/linuskendall/cosmonaut/internal/sshconfig"
 )
 
 const (
@@ -41,6 +43,23 @@ func Run() {
 		filepath.Join(home, ".ssh", newName),
 	)
 	migrateSSHInclude(filepath.Join(home, ".ssh", "config"))
+	refreshSSHExtras()
+}
+
+// refreshSSHExtras rewrites the cosmonaut-managed tail of every codespace
+// conf in ~/.ssh/cosmonaut/ so option additions (e.g. IdentityAgent none
+// for YubiKey users) take effect for codespaces created on older versions.
+// Idempotent: a no-op once every conf is at the current version.
+func refreshSSHExtras() {
+	paths := sshconfig.ResolvePaths()
+	n, err := sshconfig.RefreshAllManagedExtras(paths.IncludeDir)
+	if err != nil {
+		log.Printf("migrate: refresh ssh extras: %v", err)
+		return
+	}
+	if n > 0 {
+		log.Printf("migrate: refreshed ssh extras in %d codespace conf(s)", n)
+	}
 }
 
 // migrateDir copies oldDir to newDir if oldDir exists and newDir does not.

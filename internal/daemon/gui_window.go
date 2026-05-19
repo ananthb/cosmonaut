@@ -25,6 +25,7 @@ type unifiedWindow struct {
 	daemon  *Daemon
 	win     fyne.Window
 	content *fyne.Container // stack container for swapping content panels
+	banner  *fyne.Container // top banner for transient warnings; empty when nothing to show
 	tree    *widget.Tree
 
 	// Data for the tree.

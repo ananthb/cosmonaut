@@ -28,9 +28,58 @@ type Daemon struct {
 	mu         sync.Mutex
 	codespaces []codespace.Codespace
 	portCache  map[string]portCacheEntry
+	listErr    error
 	stopCh     chan struct{}
 	sessions   *SessionTracker
 	forwards   *PortForwardManager
+
+	dismissMu sync.Mutex
+	dismissed map[string]bool
+
+	uwMu     sync.Mutex
+	activeUW *unifiedWindow
+}
+
+// setActiveUnifiedWindow records the currently-open main window so other
+// surfaces (e.g. the Settings page) can trigger its banner to refresh
+// when a check passes or dismissal state changes.
+func (d *Daemon) setActiveUnifiedWindow(uw *unifiedWindow) {
+	d.uwMu.Lock()
+	defer d.uwMu.Unlock()
+	d.activeUW = uw
+}
+
+// activeUnifiedWindow returns the currently-tracked main window, or nil.
+func (d *Daemon) activeUnifiedWindow() *unifiedWindow {
+	d.uwMu.Lock()
+	defer d.uwMu.Unlock()
+	return d.activeUW
+}
+
+// DismissCheck marks a doctor check ID as dismissed for the current
+// session. Banners hide it; the Settings page health section still
+// shows it so the user can come back to it.
+func (d *Daemon) DismissCheck(id string) {
+	d.dismissMu.Lock()
+	defer d.dismissMu.Unlock()
+	if d.dismissed == nil {
+		d.dismissed = map[string]bool{}
+	}
+	d.dismissed[id] = true
+}
+
+// UndismissCheck clears a previous dismissal so the banner can show again.
+func (d *Daemon) UndismissCheck(id string) {
+	d.dismissMu.Lock()
+	defer d.dismissMu.Unlock()
+	delete(d.dismissed, id)
+}
+
+// IsDismissed reports whether the given check ID has been dismissed.
+func (d *Daemon) IsDismissed(id string) bool {
+	d.dismissMu.Lock()
+	defer d.dismissMu.Unlock()
+	return d.dismissed[id]
 }
 
 // New creates a new Daemon with the given config.
@@ -123,4 +172,19 @@ func (d *Daemon) SetCodespaces(cs []codespace.Codespace) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.codespaces = cs
+}
+
+// ListErr returns the error from the most recent codespace list attempt,
+// or nil on success.
+func (d *Daemon) ListErr() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.listErr
+}
+
+// SetListErr stores the error from the most recent codespace list attempt.
+func (d *Daemon) SetListErr(err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.listErr = err
 }
