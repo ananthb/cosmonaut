@@ -30,10 +30,10 @@ type Daemon struct {
 	codespaces []codespace.Codespace
 	workspaces []provider.Workspace
 	portCache  map[string]portCacheEntry
-	forwards   *PortForwardManager
 	listErr    error
 	stopCh     chan struct{}
 	sessions   *SessionTracker
+	forwards   *PortForwardManager
 
 	dismissMu sync.Mutex
 	dismissed map[string]bool
