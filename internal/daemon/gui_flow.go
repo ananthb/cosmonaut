@@ -73,19 +73,11 @@ func (d *Daemon) showGUI(args ...string) {
 			}
 			uw.win.Show()
 			if detailOnly {
-				if ws.Provider == provider.NameCoder {
-					uw.showCoderWorkspaceDetail(*ws)
-				} else {
-					uw.showWorkspaceDetail(ws.Provider, ws.Name)
-				}
+				uw.showDetailFor(*ws)
 				if portForward {
 					wsCopy := *ws
 					uw.showAdHocPortForwardDialog(wsCopy.Provider, wsCopy.Name, func() {
-						if wsCopy.Provider == provider.NameCoder {
-							uw.showCoderWorkspaceDetail(wsCopy)
-						} else {
-							uw.showWorkspaceDetail(wsCopy.Provider, wsCopy.Name)
-						}
+						uw.showDetailFor(wsCopy)
 					})
 				}
 				if deleteFlow {

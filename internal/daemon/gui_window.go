@@ -307,6 +307,17 @@ func (uw *unifiedWindow) showRepoSummary(repo string) {
 	))
 }
 
+// showDetailFor routes to the right detail page for ws. Coder
+// workspaces have a richer detail surface that takes the whole
+// Workspace; GitHub codespaces look up their cached entry by name.
+func (uw *unifiedWindow) showDetailFor(ws provider.Workspace) {
+	if ws.Provider == provider.NameCoder {
+		uw.showCoderWorkspaceDetail(ws)
+		return
+	}
+	uw.showWorkspaceDetail(ws.Provider, ws.Name)
+}
+
 func (uw *unifiedWindow) showWorkspaceDetail(providerName, name string) {
 	for _, ws := range uw.daemon.Workspaces() {
 		if ws.Provider == providerName && ws.Name == name {

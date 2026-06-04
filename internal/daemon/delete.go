@@ -56,7 +56,7 @@ func (d *Daemon) confirmAndDeleteWorkspace(parent fyne.Window, providerName, nam
 					onDone()
 				}
 			})
-			d.maybePollAsyncForce()
+			go d.forcePoll()
 		}()
 	}, parent)
 }
@@ -70,12 +70,6 @@ func (d *Daemon) deleteWorkspace(providerName, name string) error {
 		return fmt.Errorf("delete %s: %w", name, err)
 	}
 	return nil
-}
-
-// maybePollAsyncForce kicks an unconditional poll, used after a
-// state-changing action like delete where the debounce isn't useful.
-func (d *Daemon) maybePollAsyncForce() {
-	go d.poll()
 }
 
 func providerLabel(providerName string) string {

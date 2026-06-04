@@ -48,102 +48,95 @@ func (d *Daemon) watchTrayOpened() {
 	}
 }
 
-// maybePollAsync triggers d.poll() in a goroutine if no poll has run in
-// the last autoPollMinInterval. Used by event-driven refreshers (tray
-// opened, window focus) so we never refresh more than once per debounce
-// window even if the user clicks the tray repeatedly.
+// maybePollAsync triggers a poll in a goroutine if no poll has run in
+// the last autoPollMinInterval and no poll is currently in flight. Used
+// by event-driven refreshers (tray opened, window focus) so we never
+// refresh more than once per debounce window even if the user clicks
+// the tray repeatedly. poll()'s own single-flight gate is the real
+// guarantee; this just avoids spawning goroutines that would no-op.
 func (d *Daemon) maybePollAsync() {
 	d.mu.Lock()
 	if d.pollInFlight || time.Since(d.lastPollAt) < autoPollMinInterval {
 		d.mu.Unlock()
 		return
 	}
-	d.pollInFlight = true
 	d.mu.Unlock()
 	go d.poll()
 }
 
+// poll runs a single refresh, skipping if another poll is already in
+// flight. Single-flight prevents concurrent triggers (ticker, foreground
+// event, initial Run) from racing on the workspace caches.
 func (d *Daemon) poll() {
+	if !d.tryAcquirePoll() {
+		return
+	}
+	defer d.releasePoll()
+	d.runPoll()
+}
+
+// forcePoll waits for any in-flight poll to finish and then runs a
+// fresh one. Used after state-changing actions (e.g. delete) where the
+// in-flight poll's data predates the action and would clobber the
+// post-action state on completion.
+func (d *Daemon) forcePoll() {
+	d.acquirePoll()
+	defer d.releasePoll()
+	d.runPoll()
+}
+
+// tryAcquirePoll claims the in-flight slot if free. Returns false when
+// another poll already holds it.
+func (d *Daemon) tryAcquirePoll() bool {
 	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.pollInFlight {
+		return false
+	}
+	d.pollInFlight = true
+	return true
+}
+
+// acquirePoll blocks until the in-flight slot is free, then claims it.
+func (d *Daemon) acquirePoll() {
+	d.mu.Lock()
+	for d.pollInFlight {
+		d.pollCond.Wait()
+	}
 	d.pollInFlight = true
 	d.mu.Unlock()
-	defer func() {
-		d.mu.Lock()
-		d.pollInFlight = false
-		d.lastPollAt = time.Now()
-		d.mu.Unlock()
-	}()
+}
+
+// releasePoll frees the in-flight slot and wakes any forcePoll waiters.
+func (d *Daemon) releasePoll() {
+	d.mu.Lock()
+	d.pollInFlight = false
+	d.lastPollAt = time.Now()
+	d.pollCond.Broadcast()
+	d.mu.Unlock()
+}
+
+// runPoll is the actual refresh body. Caller must hold the in-flight
+// slot via tryAcquirePoll or acquirePoll.
+func (d *Daemon) runPoll() {
 	var codespaces []codespace.Codespace
-	var err error
-	if ghErr := provider.RequireCommand("gh"); ghErr != nil {
-		err = ghErr
-		log.Printf("poll: %v", err)
-		d.setProviderStatus(provider.NameGitHub, ProviderStatus{Available: false, Err: err})
-		if d.Cfg == nil || d.Cfg.EffectiveWorkspaceProvider() == provider.NameGitHub {
-			d.SetListErr(err)
-		}
-	} else {
-		codespaces, err = codespace.ListAllCodespaces(d.Runner)
+	ghWorkspaces := d.pollProvider(provider.NameGitHub, "gh", func() ([]provider.Workspace, error) {
+		cs, err := codespace.ListAllCodespaces(d.Runner)
 		if err != nil {
-			log.Printf("poll: %v", err)
-			if d.Cfg == nil || d.Cfg.EffectiveWorkspaceProvider() == provider.NameGitHub {
-				d.SetListErr(err)
-			}
-			codespaces = nil
+			return nil, err
 		}
-		d.setProviderStatus(provider.NameGitHub, ProviderStatus{Available: true, Err: err})
-	}
-	var workspaces []provider.Workspace
-	if len(codespaces) > 0 {
-		for _, cs := range codespaces {
-			ws := provider.Workspace{
-				Provider:    provider.NameGitHub,
-				Name:        cs.Name,
-				DisplayName: cs.DisplayName,
-				Repository:  string(cs.Repository),
-				State:       cs.State,
-				MachineName: cs.MachineName,
-				CreatedAt:   cs.CreatedAt,
-				LastUsedAt:  cs.LastUsedAt,
-			}
-			if cs.GitStatus != nil {
-				ws.Branch = cs.GitStatus.Ref
-				if ws.Branch == "" {
-					ws.Branch = cs.GitStatus.Branch
-				}
-			}
-			workspaces = append(workspaces, ws)
-		}
-	}
+		codespaces = cs
+		return codespacesToWorkspaces(cs), nil
+	})
 
-	var coderErr error
+	var coderWorkspaces []provider.Workspace
 	if d.Cfg != nil && d.Cfg.IsCoderConfigured() {
-		if coderCLIErr := provider.RequireCommand("coder"); coderCLIErr != nil {
-			coderErr = coderCLIErr
-			log.Printf("poll(coder): %v", coderErr)
-			d.setProviderStatus(provider.NameCoder, ProviderStatus{Available: false, Err: coderErr})
-		} else {
-			coderManager := provider.NewCoderManager(d.Cfg)
-			var coderWorkspaces []provider.Workspace
-			coderWorkspaces, coderErr = coderManager.ListAllWorkspaces()
-			if coderErr != nil {
-				log.Printf("poll(coder): %v", coderErr)
-			} else {
-				workspaces = append(workspaces, coderWorkspaces...)
-			}
-			d.setProviderStatus(provider.NameCoder, ProviderStatus{Available: true, Err: coderErr})
-		}
-		if coderErr != nil && d.Cfg.EffectiveWorkspaceProvider() == provider.NameCoder {
-			d.SetListErr(coderErr)
-		}
+		coderWorkspaces = d.pollProvider(provider.NameCoder, "coder", func() ([]provider.Workspace, error) {
+			return provider.NewCoderManager(d.Cfg).ListAllWorkspaces()
+		})
 	}
 
-	if (d.Cfg == nil || d.Cfg.EffectiveWorkspaceProvider() == provider.NameGitHub) && err == nil {
-		d.SetListErr(nil)
-	}
-	if d.Cfg != nil && d.Cfg.EffectiveWorkspaceProvider() == provider.NameCoder && coderErr == nil {
-		d.SetListErr(nil)
-	}
+	workspaces := append(ghWorkspaces, coderWorkspaces...)
 
 	log.Printf("poll: fetched %d github codespaces and %d total workspaces", len(codespaces), len(workspaces))
 
@@ -157,6 +150,67 @@ func (d *Daemon) poll() {
 	d.checkAutoStop(codespaces)
 	d.updateTrayIcon(workspaces)
 	d.rebuildTrayMenu()
+}
+
+// pollProvider does the CLI presence check + list call for one
+// provider, records the resulting ProviderStatus, and propagates
+// listErr when the provider is the effective default. Returns the
+// listed workspaces, or nil on failure.
+func (d *Daemon) pollProvider(name, cli string, list func() ([]provider.Workspace, error)) []provider.Workspace {
+	if err := provider.RequireCommand(cli); err != nil {
+		log.Printf("poll(%s): %v", name, err)
+		d.setProviderStatus(name, ProviderStatus{Available: false, Err: err})
+		d.updateEffectiveListErr(name, err)
+		return nil
+	}
+	workspaces, err := list()
+	if err != nil {
+		log.Printf("poll(%s): %v", name, err)
+	}
+	d.setProviderStatus(name, ProviderStatus{Available: true, Err: err})
+	d.updateEffectiveListErr(name, err)
+	if err != nil {
+		return nil
+	}
+	return workspaces
+}
+
+// updateEffectiveListErr writes listErr only when the named provider
+// is the user's effective default — otherwise the shared listErr would
+// reflect a non-default provider's errors and confuse banner UI.
+func (d *Daemon) updateEffectiveListErr(providerName string, err error) {
+	effective := provider.NameGitHub
+	if d.Cfg != nil {
+		effective = d.Cfg.EffectiveWorkspaceProvider()
+	}
+	if effective != providerName {
+		return
+	}
+	d.SetListErr(err)
+}
+
+func codespacesToWorkspaces(items []codespace.Codespace) []provider.Workspace {
+	out := make([]provider.Workspace, 0, len(items))
+	for _, cs := range items {
+		ws := provider.Workspace{
+			Provider:    provider.NameGitHub,
+			Name:        cs.Name,
+			DisplayName: cs.DisplayName,
+			Repository:  string(cs.Repository),
+			State:       cs.State,
+			MachineName: cs.MachineName,
+			CreatedAt:   cs.CreatedAt,
+			LastUsedAt:  cs.LastUsedAt,
+		}
+		if cs.GitStatus != nil {
+			ws.Branch = cs.GitStatus.Ref
+			if ws.Branch == "" {
+				ws.Branch = cs.GitStatus.Branch
+			}
+		}
+		out = append(out, ws)
+	}
+	return out
 }
 
 func (d *Daemon) refreshCoderWorkspacesAsync(done func()) {

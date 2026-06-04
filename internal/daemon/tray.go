@@ -68,13 +68,7 @@ func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 	repos = hist.SortRepos(repos)
 
 	items := make([]*fyne.MenuItem, 0, len(repos)+2)
-
-	if status := d.ProviderStatus(provider.NameGitHub); !status.CheckedAt.IsZero() {
-		if msg := githubStatusMessage(status); msg != "" {
-			items = append(items, disabledMenuItem(msg))
-			items = append(items, fyne.NewMenuItemSeparator())
-		}
-	}
+	items = d.appendProviderStatusRow(items, provider.NameGitHub, githubStatusMessage)
 
 	if len(repos) == 0 {
 		items = append(items, disabledMenuItem("No codespaces"))
@@ -101,6 +95,23 @@ func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 	root := fyne.NewMenuItem("Codespaces", nil)
 	root.ChildMenu = fyne.NewMenu("", items...)
 	return root
+}
+
+// appendProviderStatusRow adds a disabled status row + separator to
+// items when the provider's last ProviderStatus has a problem to
+// report. Returns items unchanged when status is empty or the provider
+// hasn't been polled yet. msgFn maps a status to provider-specific
+// wording.
+func (d *Daemon) appendProviderStatusRow(items []*fyne.MenuItem, providerName string, msgFn func(ProviderStatus) string) []*fyne.MenuItem {
+	status := d.ProviderStatus(providerName)
+	if status.CheckedAt.IsZero() {
+		return items
+	}
+	msg := msgFn(status)
+	if msg == "" {
+		return items
+	}
+	return append(items, disabledMenuItem(msg), fyne.NewMenuItemSeparator())
 }
 
 // githubStatusMessage returns a short human-readable summary of the
@@ -141,13 +152,7 @@ func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {
 	})
 
 	items := make([]*fyne.MenuItem, 0, len(workspaces)+3)
-
-	if status := d.ProviderStatus(provider.NameCoder); !status.CheckedAt.IsZero() {
-		if msg := coderStatusMessage(status); msg != "" {
-			items = append(items, disabledMenuItem(msg))
-			items = append(items, fyne.NewMenuItemSeparator())
-		}
-	}
+	items = d.appendProviderStatusRow(items, provider.NameCoder, coderStatusMessage)
 
 	if len(workspaces) == 0 {
 		items = append(items, disabledMenuItem("No Coder workspaces"))
