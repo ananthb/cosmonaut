@@ -473,7 +473,12 @@ func (uw *unifiedWindow) buildCodespacePortsSection(csName, repo string) fyne.Ca
 			uw.showCosmoCodespaceDetail(csName, repo)
 		})
 	})
-	header := container.NewHBox(title, layout.NewSpacer(), refreshBtn)
+	forwardBtn := widget.NewButton("Forward port...", func() {
+		uw.showAdHocPortForwardDialog(provider.NameGitHub, csName, func() {
+			uw.showCosmoCodespaceDetail(csName, repo)
+		})
+	})
+	header := container.NewHBox(title, layout.NewSpacer(), forwardBtn, refreshBtn)
 
 	entry := uw.daemon.ensurePortsWithCallback(csName, func() {
 		uw.showCosmoCodespaceDetail(csName, repo)
@@ -796,12 +801,17 @@ func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
 
 func (uw *unifiedWindow) buildCoderPortsSection(ws provider.Workspace, target config.Target, targetName string) fyne.CanvasObject {
 	title := caption("CONFIGURED PORT FORWARDS")
+	adHocBtn := widget.NewButton("Forward port...", func() {
+		uw.showAdHocPortForwardDialog(provider.NameCoder, ws.Name, func() {
+			uw.showCoderWorkspaceDetail(ws)
+		})
+	})
 	addBtn := primaryButton("Add port forward", func() {
 		uw.showCoderPortDialog(ws, target, targetName, -1, nil)
 	})
 
 	rows := []fyne.CanvasObject{
-		container.NewHBox(title, layout.NewSpacer(), addBtn),
+		container.NewHBox(title, layout.NewSpacer(), adHocBtn, addBtn),
 	}
 
 	if target.Coder == nil || len(target.Coder.PortForwards) == 0 {
@@ -931,6 +941,60 @@ func (uw *unifiedWindow) showCoderPortDialog(ws provider.Workspace, target confi
 			return
 		}
 		uw.showCoderWorkspaceDetail(ws)
+	}, uw.win)
+}
+
+// showAdHocPortForwardDialog prompts for remote/local port (+ protocol for
+// providers that support UDP) and starts a one-off workspace port forward.
+// The forward is not saved to config — it lives for the daemon's lifetime.
+func (uw *unifiedWindow) showAdHocPortForwardDialog(providerName, workspaceName string, onStarted func()) {
+	remoteEntry := widget.NewEntry()
+	remoteEntry.PlaceHolder = "3000"
+	localEntry := widget.NewEntry()
+	localEntry.PlaceHolder = "same as remote"
+
+	items := []*widget.FormItem{
+		widget.NewFormItem("Remote port", remoteEntry),
+		widget.NewFormItem("Local port", localEntry),
+	}
+	var protocolSelect *widget.Select
+	if providerName == provider.NameCoder {
+		protocolSelect = widget.NewSelect([]string{"tcp", "udp"}, nil)
+		protocolSelect.Selected = "tcp"
+		items = append(items, widget.NewFormItem("Protocol", protocolSelect))
+	}
+
+	title := fmt.Sprintf("Forward port — %s", workspaceName)
+	dialog.ShowForm(title, "Forward", "Cancel", items, func(ok bool) {
+		if !ok {
+			return
+		}
+		remotePort, err := strconv.Atoi(strings.TrimSpace(remoteEntry.Text))
+		if err != nil || remotePort <= 0 || remotePort > 65535 {
+			dialog.ShowError(fmt.Errorf("remote port must be between 1 and 65535"), uw.win)
+			return
+		}
+		localPort := remotePort
+		if strings.TrimSpace(localEntry.Text) != "" {
+			localPort, err = strconv.Atoi(strings.TrimSpace(localEntry.Text))
+			if err != nil || localPort <= 0 || localPort > 65535 {
+				dialog.ShowError(fmt.Errorf("local port must be between 1 and 65535"), uw.win)
+				return
+			}
+		}
+		protocol := "tcp"
+		if protocolSelect != nil {
+			protocol = normalizePortForwardProtocol(protocolSelect.Selected)
+		}
+		go func() {
+			if err := uw.daemon.startWorkspacePortForward(providerName, workspaceName, protocol, remotePort, localPort); err != nil {
+				fyne.Do(func() { dialog.ShowError(err, uw.win) })
+				return
+			}
+			if onStarted != nil {
+				fyne.Do(onStarted)
+			}
+		}()
 	}, uw.win)
 }
 
