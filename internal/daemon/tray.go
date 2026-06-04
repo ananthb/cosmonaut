@@ -58,7 +58,8 @@ func (d *Daemon) buildTrayMenu() *fyne.Menu {
 
 func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 	all := d.Codespaces()
-	if len(all) == 0 {
+	configured := d.Cfg == nil || d.Cfg.IsGitHubConfigured()
+	if len(all) == 0 && !configured {
 		return nil
 	}
 
@@ -66,7 +67,22 @@ func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 	hist := history.Load()
 	repos = hist.SortRepos(repos)
 
-	items := make([]*fyne.MenuItem, 0, len(repos))
+	items := make([]*fyne.MenuItem, 0, len(repos)+2)
+
+	if status := d.ProviderStatus(provider.NameGitHub); !status.CheckedAt.IsZero() {
+		if msg := githubStatusMessage(status); msg != "" {
+			items = append(items, disabledMenuItem(msg))
+			items = append(items, fyne.NewMenuItemSeparator())
+		}
+	}
+
+	if len(repos) == 0 {
+		items = append(items, disabledMenuItem("No codespaces"))
+		root := fyne.NewMenuItem("Codespaces", nil)
+		root.ChildMenu = fyne.NewMenu("", items...)
+		return root
+	}
+
 	for _, repo := range repos {
 		repo := repo
 		args := d.targetNameForRepo(repo)
@@ -85,6 +101,28 @@ func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 	root := fyne.NewMenuItem("Codespaces", nil)
 	root.ChildMenu = fyne.NewMenu("", items...)
 	return root
+}
+
+// githubStatusMessage returns a short human-readable summary of the
+// GitHub CLI local-setup state. Empty when everything is healthy.
+func githubStatusMessage(status ProviderStatus) string {
+	if !status.Available {
+		return "gh CLI not installed"
+	}
+	if status.Err == nil {
+		return ""
+	}
+	msg := strings.ToLower(status.Err.Error())
+	switch {
+	case strings.Contains(msg, `needs the "codespace" scope`):
+		return "gh token missing codespace scope"
+	case strings.Contains(msg, "not logged"),
+		strings.Contains(msg, "authentication"),
+		strings.Contains(msg, "auth status"):
+		return "Not authenticated (run `gh auth login`)"
+	default:
+		return "Codespaces unavailable"
+	}
 }
 
 func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {

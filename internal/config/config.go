@@ -148,6 +148,25 @@ func (c *Config) IsCoderConfigured() bool {
 	return false
 }
 
+// IsGitHubConfigured reports whether GitHub Codespaces is in use:
+// either as the effective provider (the default), or via any target
+// that doesn't declare a `coder` block. Symmetric to IsCoderConfigured
+// so the Codespaces menu stays visible when the user expects it.
+func (c *Config) IsGitHubConfigured() bool {
+	if c == nil {
+		return true
+	}
+	if c.EffectiveWorkspaceProvider() == "github" {
+		return true
+	}
+	for _, t := range c.Targets {
+		if t.Coder == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (t Target) ExplicitWorkspaceName(provider string) string {
 	if provider == "coder" {
 		if t.Coder != nil && t.Coder.WorkspaceName != "" {
