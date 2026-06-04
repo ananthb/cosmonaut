@@ -80,9 +80,10 @@ func (d *Daemon) showPreferences() {
 	})
 }
 
-// buildHealthSection lists every doctor check with its current status
-// and a Fix button when applicable. Even if a user dismissed the main
-// window banner, the same fix is reachable here.
+// buildHealthSection renders the doctor catalog. Failing checks stay
+// fully visible with their fix actions; passing checks are folded into
+// a single collapsed accordion row so the section stays compact when
+// everything is healthy.
 func (d *Daemon) buildHealthSection(win fyne.Window) fyne.CanvasObject {
 	heading := widget.NewLabel("Health checks")
 	heading.TextStyle = fyne.TextStyle{Bold: true}
@@ -95,10 +96,36 @@ func (d *Daemon) buildHealthSection(win fyne.Window) fyne.CanvasObject {
 		d.refreshMainWindowBanner()
 	}
 
-	rows := []fyne.CanvasObject{heading}
+	var failing, passing []doctor.Check
 	for _, c := range doctor.Catalog(d.ListErr) {
+		if c.Status() == nil {
+			passing = append(passing, c)
+		} else {
+			failing = append(failing, c)
+		}
+	}
+
+	rows := []fyne.CanvasObject{heading}
+	for _, c := range failing {
 		rows = append(rows, d.buildHealthRow(c, win, rebuild))
 	}
+
+	if len(passing) > 0 {
+		var title string
+		if len(failing) == 0 {
+			title = fmt.Sprintf("✓ All OK (%d checks)", len(passing))
+		} else {
+			title = fmt.Sprintf("Other checks passing (%d)", len(passing))
+		}
+		var passingRows []fyne.CanvasObject
+		for _, c := range passing {
+			passingRows = append(passingRows, d.buildHealthRow(c, win, rebuild))
+		}
+		detail := container.NewVBox(passingRows...)
+		acc := widget.NewAccordion(widget.NewAccordionItem(title, detail))
+		rows = append(rows, acc)
+	}
+
 	return container.NewVBox(rows...)
 }
 
