@@ -7,20 +7,20 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/systray"
 
 	"github.com/linuskendall/cosmonaut/internal/codespace"
 	"github.com/linuskendall/cosmonaut/internal/provider"
 )
 
-func (d *Daemon) startPoller() {
-	interval := 5 * time.Minute
-	if d.Cfg != nil && d.Cfg.Daemon != nil && d.Cfg.Daemon.PollInterval != "" {
-		if parsed, err := time.ParseDuration(d.Cfg.Daemon.PollInterval); err == nil {
-			interval = parsed
-		}
-	}
+// pollerBackstopInterval is the periodic refresh used as a fallback when
+// no user interaction is happening. Event-driven refreshes (tray opened,
+// app foregrounded) cover the responsive case; this just keeps state
+// from going indefinitely stale when the user leaves the menu alone.
+const pollerBackstopInterval = 15 * time.Minute
 
-	ticker := time.NewTicker(interval)
+func (d *Daemon) startPoller() {
+	ticker := time.NewTicker(pollerBackstopInterval)
 	defer ticker.Stop()
 
 	for {
@@ -33,14 +33,65 @@ func (d *Daemon) startPoller() {
 	}
 }
 
+// watchTrayOpened listens for system tray menu opens and triggers a
+// debounced refresh. Wakes on macOS (NSMenu menuWillOpen:) and Linux
+// (DBusMenu "opened"); does nothing on platforms where the underlying
+// systray library doesn't drive the channel.
+func (d *Daemon) watchTrayOpened() {
+	for {
+		select {
+		case <-systray.TrayOpenedCh:
+			d.maybePollAsync()
+		case <-d.stopCh:
+			return
+		}
+	}
+}
+
+// maybePollAsync triggers d.poll() in a goroutine if no poll has run in
+// the last autoPollMinInterval. Used by event-driven refreshers (tray
+// opened, window focus) so we never refresh more than once per debounce
+// window even if the user clicks the tray repeatedly.
+func (d *Daemon) maybePollAsync() {
+	d.mu.Lock()
+	if d.pollInFlight || time.Since(d.lastPollAt) < autoPollMinInterval {
+		d.mu.Unlock()
+		return
+	}
+	d.pollInFlight = true
+	d.mu.Unlock()
+	go d.poll()
+}
+
 func (d *Daemon) poll() {
-	codespaces, err := codespace.ListAllCodespaces(d.Runner)
-	if err != nil {
+	d.mu.Lock()
+	d.pollInFlight = true
+	d.mu.Unlock()
+	defer func() {
+		d.mu.Lock()
+		d.pollInFlight = false
+		d.lastPollAt = time.Now()
+		d.mu.Unlock()
+	}()
+	var codespaces []codespace.Codespace
+	var err error
+	if ghErr := provider.RequireCommand("gh"); ghErr != nil {
+		err = ghErr
 		log.Printf("poll: %v", err)
+		d.setProviderStatus(provider.NameGitHub, ProviderStatus{Available: false, Err: err})
 		if d.Cfg == nil || d.Cfg.EffectiveWorkspaceProvider() == provider.NameGitHub {
 			d.SetListErr(err)
 		}
-		codespaces = nil
+	} else {
+		codespaces, err = codespace.ListAllCodespaces(d.Runner)
+		if err != nil {
+			log.Printf("poll: %v", err)
+			if d.Cfg == nil || d.Cfg.EffectiveWorkspaceProvider() == provider.NameGitHub {
+				d.SetListErr(err)
+			}
+			codespaces = nil
+		}
+		d.setProviderStatus(provider.NameGitHub, ProviderStatus{Available: true, Err: err})
 	}
 	var workspaces []provider.Workspace
 	if len(codespaces) > 0 {
@@ -65,15 +116,26 @@ func (d *Daemon) poll() {
 		}
 	}
 
-	coderManager := provider.NewCoderManager(d.Cfg)
-	coderWorkspaces, coderErr := coderManager.ListAllWorkspaces()
-	if coderErr != nil {
-		log.Printf("poll(coder): %v", coderErr)
-		if d.Cfg != nil && d.Cfg.EffectiveWorkspaceProvider() == provider.NameCoder {
+	var coderErr error
+	if d.Cfg != nil && d.Cfg.IsCoderConfigured() {
+		if coderCLIErr := provider.RequireCommand("coder"); coderCLIErr != nil {
+			coderErr = coderCLIErr
+			log.Printf("poll(coder): %v", coderErr)
+			d.setProviderStatus(provider.NameCoder, ProviderStatus{Available: false, Err: coderErr})
+		} else {
+			coderManager := provider.NewCoderManager(d.Cfg)
+			var coderWorkspaces []provider.Workspace
+			coderWorkspaces, coderErr = coderManager.ListAllWorkspaces()
+			if coderErr != nil {
+				log.Printf("poll(coder): %v", coderErr)
+			} else {
+				workspaces = append(workspaces, coderWorkspaces...)
+			}
+			d.setProviderStatus(provider.NameCoder, ProviderStatus{Available: true, Err: coderErr})
+		}
+		if coderErr != nil && d.Cfg.EffectiveWorkspaceProvider() == provider.NameCoder {
 			d.SetListErr(coderErr)
 		}
-	} else {
-		workspaces = append(workspaces, coderWorkspaces...)
 	}
 
 	if (d.Cfg == nil || d.Cfg.EffectiveWorkspaceProvider() == provider.NameGitHub) && err == nil {

@@ -194,30 +194,7 @@ func (uw *unifiedWindow) buildCosmoSidebar() fyne.CanvasObject {
 	})
 	newBtn.Importance = widget.LowImportance
 
-	var refreshBtn *widget.Button
-	refreshBtn = widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() {
-		refreshBtn.Disable()
-		go func() {
-			uw.daemon.poll()
-			allUserRepos, err := codespace.ListAllRepos(uw.daemon.Runner)
-			if err != nil {
-				log.Printf("gui: refresh repos: %v", err)
-			}
-			fyne.Do(func() {
-				uw.loadRepos()
-				if len(allUserRepos) > 0 {
-					uw.allRepos = mergeRepos(uw.allRepos, allUserRepos)
-				}
-				uw.applyFilter()
-				uw.tree.Refresh()
-				uw.refreshBanner()
-				refreshBtn.Enable()
-			})
-		}()
-	})
-	refreshBtn.Importance = widget.LowImportance
-
-	titleRow := container.NewBorder(nil, nil, container.NewHBox(mark, title), container.NewHBox(refreshBtn, newBtn))
+	titleRow := container.NewBorder(nil, nil, container.NewHBox(mark, title), container.NewHBox(newBtn))
 
 	// Search
 	filterEntry := widget.NewEntry()

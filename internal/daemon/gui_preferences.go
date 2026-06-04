@@ -287,16 +287,6 @@ func (d *Daemon) buildDaemonSection() fyne.CanvasObject {
 	})
 	actionSelect.Selected = currentAction
 
-	currentPoll := daemon.PollInterval
-	if currentPoll == "" {
-		currentPoll = "5m"
-	}
-	pollSelect := widget.NewSelect([]string{"1m", "5m", "15m", "30m"}, func(val string) {
-		d.Cfg.Daemon.PollInterval = val
-		d.persistConfig()
-	})
-	pollSelect.Selected = currentPoll
-
 	currentInhibit := daemon.InhibitSleep
 	if currentInhibit == "" {
 		currentInhibit = "off"
@@ -312,7 +302,6 @@ func (d *Daemon) buildDaemonSection() fyne.CanvasObject {
 
 	return widget.NewForm(
 		widget.NewFormItem("Hotkey action", actionSelect),
-		widget.NewFormItem("Poll interval", pollSelect),
 		widget.NewFormItem("Inhibit sleep", inhibitSelect),
 	)
 }
