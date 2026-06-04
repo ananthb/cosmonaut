@@ -32,16 +32,17 @@ type Daemon struct {
 
 	app fyne.App
 
-	mu         sync.Mutex
-	codespaces []codespace.Codespace
-	workspaces []provider.Workspace
-	portCache  map[string]portCacheEntry
-	listErr    error
-	lastPollAt time.Time
-	pollInFlight bool
-	stopCh     chan struct{}
-	sessions   *SessionTracker
-	forwards   *PortForwardManager
+	mu             sync.Mutex
+	codespaces     []codespace.Codespace
+	workspaces     []provider.Workspace
+	portCache      map[string]portCacheEntry
+	listErr        error
+	providerStatus map[string]ProviderStatus
+	lastPollAt     time.Time
+	pollInFlight   bool
+	stopCh         chan struct{}
+	sessions       *SessionTracker
+	forwards       *PortForwardManager
 
 	dismissMu sync.Mutex
 	dismissed map[string]bool

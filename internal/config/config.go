@@ -129,6 +129,25 @@ func (c *Config) EffectiveWorkspaceProvider() string {
 	return c.WorkspaceProvider
 }
 
+// IsCoderConfigured reports whether Coder is in use anywhere in the
+// config: as the effective provider, or via any target that declares a
+// `coder` block. Used to keep the Coder menu visible whenever the user
+// has wired up Coder, even if the API call failed on the last poll.
+func (c *Config) IsCoderConfigured() bool {
+	if c == nil {
+		return false
+	}
+	if c.EffectiveWorkspaceProvider() == "coder" {
+		return true
+	}
+	for _, t := range c.Targets {
+		if t.Coder != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (t Target) ExplicitWorkspaceName(provider string) string {
 	if provider == "coder" {
 		if t.Coder != nil && t.Coder.WorkspaceName != "" {

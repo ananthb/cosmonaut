@@ -73,13 +73,25 @@ func (d *Daemon) poll() {
 		d.lastPollAt = time.Now()
 		d.mu.Unlock()
 	}()
-	codespaces, err := codespace.ListAllCodespaces(d.Runner)
-	if err != nil {
+	var codespaces []codespace.Codespace
+	var err error
+	if ghErr := provider.RequireCommand("gh"); ghErr != nil {
+		err = ghErr
 		log.Printf("poll: %v", err)
+		d.setProviderStatus(provider.NameGitHub, ProviderStatus{Available: false, Err: err})
 		if d.Cfg == nil || d.Cfg.EffectiveWorkspaceProvider() == provider.NameGitHub {
 			d.SetListErr(err)
 		}
-		codespaces = nil
+	} else {
+		codespaces, err = codespace.ListAllCodespaces(d.Runner)
+		if err != nil {
+			log.Printf("poll: %v", err)
+			if d.Cfg == nil || d.Cfg.EffectiveWorkspaceProvider() == provider.NameGitHub {
+				d.SetListErr(err)
+			}
+			codespaces = nil
+		}
+		d.setProviderStatus(provider.NameGitHub, ProviderStatus{Available: true, Err: err})
 	}
 	var workspaces []provider.Workspace
 	if len(codespaces) > 0 {
@@ -104,15 +116,26 @@ func (d *Daemon) poll() {
 		}
 	}
 
-	coderManager := provider.NewCoderManager(d.Cfg)
-	coderWorkspaces, coderErr := coderManager.ListAllWorkspaces()
-	if coderErr != nil {
-		log.Printf("poll(coder): %v", coderErr)
-		if d.Cfg != nil && d.Cfg.EffectiveWorkspaceProvider() == provider.NameCoder {
+	var coderErr error
+	if d.Cfg != nil && d.Cfg.IsCoderConfigured() {
+		if coderCLIErr := provider.RequireCommand("coder"); coderCLIErr != nil {
+			coderErr = coderCLIErr
+			log.Printf("poll(coder): %v", coderErr)
+			d.setProviderStatus(provider.NameCoder, ProviderStatus{Available: false, Err: coderErr})
+		} else {
+			coderManager := provider.NewCoderManager(d.Cfg)
+			var coderWorkspaces []provider.Workspace
+			coderWorkspaces, coderErr = coderManager.ListAllWorkspaces()
+			if coderErr != nil {
+				log.Printf("poll(coder): %v", coderErr)
+			} else {
+				workspaces = append(workspaces, coderWorkspaces...)
+			}
+			d.setProviderStatus(provider.NameCoder, ProviderStatus{Available: true, Err: coderErr})
+		}
+		if coderErr != nil && d.Cfg.EffectiveWorkspaceProvider() == provider.NameCoder {
 			d.SetListErr(coderErr)
 		}
-	} else {
-		workspaces = append(workspaces, coderWorkspaces...)
 	}
 
 	if (d.Cfg == nil || d.Cfg.EffectiveWorkspaceProvider() == provider.NameGitHub) && err == nil {

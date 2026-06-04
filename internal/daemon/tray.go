@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sort"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/driver/desktop"
@@ -88,7 +89,8 @@ func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 
 func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {
 	workspaces := filterWorkspacesByProvider(d.Workspaces(), provider.NameCoder)
-	if len(workspaces) == 0 && (d.Cfg == nil || d.Cfg.EffectiveWorkspaceProvider() != provider.NameCoder) {
+	configured := d.Cfg != nil && d.Cfg.IsCoderConfigured()
+	if len(workspaces) == 0 && !configured {
 		return nil
 	}
 
@@ -101,6 +103,14 @@ func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {
 	})
 
 	items := make([]*fyne.MenuItem, 0, len(workspaces)+3)
+
+	if status := d.ProviderStatus(provider.NameCoder); !status.CheckedAt.IsZero() {
+		if msg := coderStatusMessage(status); msg != "" {
+			items = append(items, disabledMenuItem(msg))
+			items = append(items, fyne.NewMenuItemSeparator())
+		}
+	}
+
 	if len(workspaces) == 0 {
 		items = append(items, disabledMenuItem("No Coder workspaces"))
 		items = append(items, fyne.NewMenuItem("Create new...", func() {
@@ -123,6 +133,25 @@ func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {
 	item := fyne.NewMenuItem("Coder", nil)
 	item.ChildMenu = fyne.NewMenu("", items...)
 	return item
+}
+
+// coderStatusMessage returns a short human-readable summary of the
+// Coder local-setup state. Empty when everything is healthy.
+func coderStatusMessage(status ProviderStatus) string {
+	if !status.Available {
+		return "Coder CLI not installed"
+	}
+	if status.Err == nil {
+		return ""
+	}
+	msg := status.Err.Error()
+	switch {
+	case strings.Contains(strings.ToLower(msg), "not authenticated"),
+		strings.Contains(msg, "coder login"):
+		return "Not authenticated (run `coder login`)"
+	default:
+		return "Coder unavailable"
+	}
 }
 
 func (d *Daemon) coderWorkspaceActionsMenu(ws provider.Workspace) *fyne.Menu {
