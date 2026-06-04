@@ -74,13 +74,17 @@ func (d *Daemon) showGUI(args ...string) {
 			uw.win.Show()
 			if detailOnly {
 				uw.showDetailFor(*ws)
-				if portForward {
+				// --port-forward and --delete are mutually exclusive
+				// follow-ups; either fires its dialog against uw.win
+				// after the detail render, and stacking both would
+				// leave one buried behind the other.
+				switch {
+				case portForward:
 					wsCopy := *ws
 					uw.showAdHocPortForwardDialog(wsCopy.Provider, wsCopy.Name, func() {
 						uw.showDetailFor(wsCopy)
 					})
-				}
-				if deleteFlow {
+				case deleteFlow:
 					wsCopy := *ws
 					d.confirmAndDeleteWorkspace(uw.win, wsCopy.Provider, wsCopy.Name, func() {
 						uw.tree.Refresh()

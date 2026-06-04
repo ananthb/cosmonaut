@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"fmt"
+	"log"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/dialog"
 
+	"github.com/linuskendall/cosmonaut/internal/codespace"
 	"github.com/linuskendall/cosmonaut/internal/provider"
 )
 
@@ -23,20 +25,48 @@ func (d *Daemon) canDeleteWorkspace(providerName string) bool {
 	if providerName != provider.NameGitHub && providerName != provider.NameCoder {
 		return false
 	}
-	status := d.ProviderStatus(providerName)
+	status := d.StatusFor(providerName)
 	if status.CheckedAt.IsZero() {
 		return true
 	}
 	return status.Available && status.Err == nil
 }
 
+// deleteDisabledReason returns a short message explaining why the
+// Delete UI is disabled for the given provider, or "" when delete is
+// currently possible. Surfaced in the GUI next to the button so the
+// user isn't left guessing.
+func (d *Daemon) deleteDisabledReason(providerName string) string {
+	if d.canDeleteWorkspace(providerName) {
+		return ""
+	}
+	status := d.StatusFor(providerName)
+	if !status.Available {
+		switch providerName {
+		case provider.NameCoder:
+			return "coder CLI not installed"
+		case provider.NameGitHub:
+			return "gh CLI not installed"
+		}
+		return "CLI not available"
+	}
+	if status.Err != nil {
+		return "auth or list call failing"
+	}
+	return ""
+}
+
 // confirmAndDeleteWorkspace shows a destructive confirmation dialog
 // rooted at parent. On confirm, runs the provider's DeleteWorkspace in
-// a goroutine, notifies on success/error, refreshes the daemon's
-// caches, and invokes onDone (on the Fyne goroutine) after completion.
-// Pass onDone=nil if there's nothing extra to do.
+// a goroutine and dispatches success/failure handling on the Fyne
+// goroutine. On success: prunes the workspace from local caches so
+// the UI reflects the deletion immediately, notifies the user, runs
+// onDone, then forcePollAsync to reconcile with the backend. On
+// failure: surfaces the error dialog and still runs onDone so the
+// caller can refresh whatever view it was managing.
 func (d *Daemon) confirmAndDeleteWorkspace(parent fyne.Window, providerName, name string, onDone func()) {
 	if parent == nil {
+		log.Printf("confirmAndDeleteWorkspace: nil parent for %s/%s", providerName, name)
 		return
 	}
 	msg := fmt.Sprintf("Delete %s workspace %q? This cannot be undone.", providerLabel(providerName), name)
@@ -45,7 +75,17 @@ func (d *Daemon) confirmAndDeleteWorkspace(parent fyne.Window, providerName, nam
 			return
 		}
 		go func() {
-			err := d.deleteWorkspace(providerName, name)
+			manager, mgrErr := d.managerForProvider(providerName)
+			var err error
+			if mgrErr != nil {
+				err = mgrErr
+			} else if delErr := manager.DeleteWorkspace(name); delErr != nil {
+				err = fmt.Errorf("delete %s: %w", name, delErr)
+			}
+			if err == nil {
+				d.pruneWorkspace(providerName, name)
+				d.rebuildTrayMenu()
+			}
 			fyne.Do(func() {
 				if err != nil {
 					dialog.ShowError(err, parent)
@@ -56,20 +96,40 @@ func (d *Daemon) confirmAndDeleteWorkspace(parent fyne.Window, providerName, nam
 					onDone()
 				}
 			})
-			go d.forcePoll()
+			if err == nil {
+				d.forcePollAsync()
+			}
 		}()
 	}, parent)
 }
 
-func (d *Daemon) deleteWorkspace(providerName, name string) error {
-	manager, err := d.managerForProvider(providerName)
-	if err != nil {
-		return err
+// pruneWorkspace removes a single workspace from the cached lists so
+// the UI reflects a just-completed delete without waiting for the
+// next poll. The follow-up forcePollAsync still runs to reconcile
+// with the source of truth.
+func (d *Daemon) pruneWorkspace(providerName, name string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.workspaces) > 0 {
+		out := make([]provider.Workspace, 0, len(d.workspaces))
+		for _, ws := range d.workspaces {
+			if ws.Provider == providerName && ws.Name == name {
+				continue
+			}
+			out = append(out, ws)
+		}
+		d.workspaces = out
 	}
-	if err := manager.DeleteWorkspace(name); err != nil {
-		return fmt.Errorf("delete %s: %w", name, err)
+	if providerName == provider.NameGitHub && len(d.codespaces) > 0 {
+		filtered := make([]codespace.Codespace, 0, len(d.codespaces))
+		for _, c := range d.codespaces {
+			if c.Name == name {
+				continue
+			}
+			filtered = append(filtered, c)
+		}
+		d.codespaces = filtered
 	}
-	return nil
 }
 
 func providerLabel(providerName string) string {

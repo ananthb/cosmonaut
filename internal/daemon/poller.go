@@ -48,12 +48,12 @@ func (d *Daemon) watchTrayOpened() {
 	}
 }
 
-// maybePollAsync triggers a poll in a goroutine if no poll has run in
-// the last autoPollMinInterval and no poll is currently in flight. Used
-// by event-driven refreshers (tray opened, window focus) so we never
-// refresh more than once per debounce window even if the user clicks
-// the tray repeatedly. poll()'s own single-flight gate is the real
-// guarantee; this just avoids spawning goroutines that would no-op.
+// maybePollAsync spawns a poll goroutine when a poll hasn't run in the
+// last autoPollMinInterval and none is currently in flight. The check
+// is advisory: two callers that pass the check concurrently can both
+// spawn goroutines, but poll()'s single-flight gate (tryAcquirePoll)
+// ensures only one actually runs. This wrapper just avoids the cost of
+// spawning goroutines that would immediately no-op.
 func (d *Daemon) maybePollAsync() {
 	d.mu.Lock()
 	if d.pollInFlight || time.Since(d.lastPollAt) < autoPollMinInterval {
@@ -75,14 +75,18 @@ func (d *Daemon) poll() {
 	d.runPoll()
 }
 
-// forcePoll waits for any in-flight poll to finish and then runs a
-// fresh one. Used after state-changing actions (e.g. delete) where the
-// in-flight poll's data predates the action and would clobber the
-// post-action state on completion.
-func (d *Daemon) forcePoll() {
-	d.acquirePoll()
-	defer d.releasePoll()
-	d.runPoll()
+// forcePollAsync spawns a goroutine that waits for any in-flight poll
+// to finish and then runs a fresh one. Used after state-changing
+// actions (e.g. delete) where the in-flight poll's data predates the
+// action and would clobber the post-action state on completion. Always
+// async because the wait can be long if the in-flight call hangs; the
+// caller never wants to block on it.
+func (d *Daemon) forcePollAsync() {
+	go func() {
+		d.acquirePoll()
+		defer d.releasePoll()
+		d.runPoll()
+	}()
 }
 
 // tryAcquirePoll claims the in-flight slot if free. Returns false when

@@ -15,9 +15,10 @@ type ProviderStatus struct {
 	CheckedAt time.Time // when this snapshot was taken
 }
 
-// ProviderStatus returns a copy of the cached status for the given
-// provider, or a zero value if none was recorded yet.
-func (d *Daemon) ProviderStatus(name string) ProviderStatus {
+// StatusFor returns a copy of the cached ProviderStatus for the given
+// provider, or a zero value if none was recorded yet. Named StatusFor
+// rather than ProviderStatus to avoid shadowing the type name.
+func (d *Daemon) StatusFor(name string) ProviderStatus {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.providerStatus == nil {

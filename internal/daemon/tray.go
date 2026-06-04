@@ -58,8 +58,7 @@ func (d *Daemon) buildTrayMenu() *fyne.Menu {
 
 func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 	all := d.Codespaces()
-	configured := d.Cfg == nil || d.Cfg.IsGitHubConfigured()
-	if len(all) == 0 && !configured {
+	if len(all) == 0 && !d.Cfg.IsGitHubConfigured() {
 		return nil
 	}
 
@@ -103,7 +102,7 @@ func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 // hasn't been polled yet. msgFn maps a status to provider-specific
 // wording.
 func (d *Daemon) appendProviderStatusRow(items []*fyne.MenuItem, providerName string, msgFn func(ProviderStatus) string) []*fyne.MenuItem {
-	status := d.ProviderStatus(providerName)
+	status := d.StatusFor(providerName)
 	if status.CheckedAt.IsZero() {
 		return items
 	}

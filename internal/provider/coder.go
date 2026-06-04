@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -13,6 +14,12 @@ import (
 	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/sshconfig"
 )
+
+// coderDeleteTimeout caps how long `coder delete --yes` can run. The
+// workspace deletion is destructive but should resolve within a minute
+// on a healthy backend; capping prevents a hung CLI from pinning the
+// confirmAndDeleteWorkspace goroutine indefinitely.
+const coderDeleteTimeout = 60 * time.Second
 
 type CoderManager struct {
 	Config *config.Config
@@ -175,7 +182,9 @@ func (m *CoderManager) DeleteWorkspace(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("workspace name is required")
 	}
-	if _, err := m.run("delete", "--yes", name); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), coderDeleteTimeout)
+	defer cancel()
+	if _, err := m.runCtx(ctx, "delete", "--yes", name); err != nil {
 		return err
 	}
 	return nil
@@ -207,11 +216,18 @@ func (m *CoderManager) PrepareSSH(paths sshconfig.SSHPaths, workspace *Workspace
 }
 
 func (m *CoderManager) run(args ...string) (string, error) {
-	cmd := exec.Command("coder", args...)
+	return m.runCtx(context.Background(), args...)
+}
+
+func (m *CoderManager) runCtx(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "coder", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("coder %s timed out", strings.Join(args, " "))
+		}
 		detail := strings.TrimSpace(stderr.String())
 		if detail == "" {
 			detail = strings.TrimSpace(stdout.String())
