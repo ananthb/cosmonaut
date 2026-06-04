@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sort"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/driver/desktop"
@@ -41,9 +42,6 @@ func (d *Daemon) buildTrayMenu() *fyne.Menu {
 	items = append(items, fyne.NewMenuItem("Launch...", func() {
 		go d.showGUI()
 	}))
-	items = append(items, fyne.NewMenuItem("Refresh workspaces", func() {
-		go d.poll()
-	}))
 
 	// Preferences.
 	items = append(items, fyne.NewMenuItemSeparator())
@@ -60,7 +58,8 @@ func (d *Daemon) buildTrayMenu() *fyne.Menu {
 
 func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 	all := d.Codespaces()
-	if len(all) == 0 {
+	configured := d.Cfg == nil || d.Cfg.IsGitHubConfigured()
+	if len(all) == 0 && !configured {
 		return nil
 	}
 
@@ -68,7 +67,22 @@ func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 	hist := history.Load()
 	repos = hist.SortRepos(repos)
 
-	items := make([]*fyne.MenuItem, 0, len(repos))
+	items := make([]*fyne.MenuItem, 0, len(repos)+2)
+
+	if status := d.ProviderStatus(provider.NameGitHub); !status.CheckedAt.IsZero() {
+		if msg := githubStatusMessage(status); msg != "" {
+			items = append(items, disabledMenuItem(msg))
+			items = append(items, fyne.NewMenuItemSeparator())
+		}
+	}
+
+	if len(repos) == 0 {
+		items = append(items, disabledMenuItem("No codespaces"))
+		root := fyne.NewMenuItem("Codespaces", nil)
+		root.ChildMenu = fyne.NewMenu("", items...)
+		return root
+	}
+
 	for _, repo := range repos {
 		repo := repo
 		args := d.targetNameForRepo(repo)
@@ -89,9 +103,32 @@ func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 	return root
 }
 
+// githubStatusMessage returns a short human-readable summary of the
+// GitHub CLI local-setup state. Empty when everything is healthy.
+func githubStatusMessage(status ProviderStatus) string {
+	if !status.Available {
+		return "gh CLI not installed"
+	}
+	if status.Err == nil {
+		return ""
+	}
+	msg := strings.ToLower(status.Err.Error())
+	switch {
+	case strings.Contains(msg, `needs the "codespace" scope`):
+		return "gh token missing codespace scope"
+	case strings.Contains(msg, "not logged"),
+		strings.Contains(msg, "authentication"),
+		strings.Contains(msg, "auth status"):
+		return "Not authenticated (run `gh auth login`)"
+	default:
+		return "Codespaces unavailable"
+	}
+}
+
 func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {
 	workspaces := filterWorkspacesByProvider(d.Workspaces(), provider.NameCoder)
-	if len(workspaces) == 0 && (d.Cfg == nil || d.Cfg.EffectiveWorkspaceProvider() != provider.NameCoder) {
+	configured := d.Cfg != nil && d.Cfg.IsCoderConfigured()
+	if len(workspaces) == 0 && !configured {
 		return nil
 	}
 
@@ -104,10 +141,14 @@ func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {
 	})
 
 	items := make([]*fyne.MenuItem, 0, len(workspaces)+3)
-	items = append(items, fyne.NewMenuItem("Refresh workspaces", func() {
-		d.refreshCoderWorkspacesAsync(nil)
-	}))
-	items = append(items, fyne.NewMenuItemSeparator())
+
+	if status := d.ProviderStatus(provider.NameCoder); !status.CheckedAt.IsZero() {
+		if msg := coderStatusMessage(status); msg != "" {
+			items = append(items, disabledMenuItem(msg))
+			items = append(items, fyne.NewMenuItemSeparator())
+		}
+	}
+
 	if len(workspaces) == 0 {
 		items = append(items, disabledMenuItem("No Coder workspaces"))
 		items = append(items, fyne.NewMenuItem("Create new...", func() {
@@ -130,6 +171,25 @@ func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {
 	item := fyne.NewMenuItem("Coder", nil)
 	item.ChildMenu = fyne.NewMenu("", items...)
 	return item
+}
+
+// coderStatusMessage returns a short human-readable summary of the
+// Coder local-setup state. Empty when everything is healthy.
+func coderStatusMessage(status ProviderStatus) string {
+	if !status.Available {
+		return "Coder CLI not installed"
+	}
+	if status.Err == nil {
+		return ""
+	}
+	msg := status.Err.Error()
+	switch {
+	case strings.Contains(strings.ToLower(msg), "not authenticated"),
+		strings.Contains(msg, "coder login"):
+		return "Not authenticated (run `coder login`)"
+	default:
+		return "Coder unavailable"
+	}
 }
 
 func (d *Daemon) coderWorkspaceActionsMenu(ws provider.Workspace) *fyne.Menu {

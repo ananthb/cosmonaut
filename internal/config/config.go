@@ -36,7 +36,6 @@ type DaemonConfig struct {
 	Hotkey       string `json:"hotkey,omitempty"`       // e.g. "Cmd+Shift+S" (macOS) or "Ctrl+Shift+S" (Linux)
 	HotkeyAction string `json:"hotkeyAction,omitempty"` // "picker" (default), "previous", or "default"
 	Terminal     string `json:"terminal,omitempty"`     // terminal app to launch picker in; "auto" to detect
-	PollInterval string `json:"pollInterval,omitempty"` // how often to poll codespace state (e.g. "5m")
 	InhibitSleep string `json:"inhibitSleep,omitempty"` // "off" (default), "sleep", or "sleep+shutdown"
 }
 
@@ -130,6 +129,44 @@ func (c *Config) EffectiveWorkspaceProvider() string {
 	return c.WorkspaceProvider
 }
 
+// IsCoderConfigured reports whether Coder is in use anywhere in the
+// config: as the effective provider, or via any target that declares a
+// `coder` block. Used to keep the Coder menu visible whenever the user
+// has wired up Coder, even if the API call failed on the last poll.
+func (c *Config) IsCoderConfigured() bool {
+	if c == nil {
+		return false
+	}
+	if c.EffectiveWorkspaceProvider() == "coder" {
+		return true
+	}
+	for _, t := range c.Targets {
+		if t.Coder != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// IsGitHubConfigured reports whether GitHub Codespaces is in use:
+// either as the effective provider (the default), or via any target
+// that doesn't declare a `coder` block. Symmetric to IsCoderConfigured
+// so the Codespaces menu stays visible when the user expects it.
+func (c *Config) IsGitHubConfigured() bool {
+	if c == nil {
+		return true
+	}
+	if c.EffectiveWorkspaceProvider() == "github" {
+		return true
+	}
+	for _, t := range c.Targets {
+		if t.Coder == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (t Target) ExplicitWorkspaceName(provider string) string {
 	if provider == "coder" {
 		if t.Coder != nil && t.Coder.WorkspaceName != "" {
@@ -175,7 +212,6 @@ var DaemonFieldDocs = []FieldDoc{
 	{"hotkey", "string", false, "Global hotkey (e.g. Cmd+Shift+S)"},
 	{"hotkeyAction", "string", false, "Hotkey behavior: picker (default), previous, or default"},
 	{"terminal", "string", false, "Terminal app for picker; auto to detect"},
-	{"pollInterval", "string", false, "Codespace poll interval (e.g. 5m)"},
 	{"inhibitSleep", "string", false, "Hold sleep/shutdown inhibitor while a codespace session is active: off (default), sleep, or sleep+shutdown"},
 }
 
