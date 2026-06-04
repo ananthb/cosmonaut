@@ -20,6 +20,8 @@ import (
 //   - target name or owner/repo: open tree, expand that repo
 //   - "--workspace", name, "--provider", provider, target: direct launch
 //   - "--detail", "--workspace", name, "--provider", provider, target: show detail
+//   - "--port-forward", "--workspace", name, "--provider", provider, target:
+//     show detail and immediately open the ad-hoc port forward dialog
 func (d *Daemon) showGUI(args ...string) {
 	if d.app == nil {
 		log.Println("gui: app not initialized")
@@ -29,10 +31,14 @@ func (d *Daemon) showGUI(args ...string) {
 	// Parse args.
 	var targetArg, workspaceName, providerName string
 	detailOnly := false
+	portForward := false
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--detail":
 			detailOnly = true
+		case args[i] == "--port-forward":
+			detailOnly = true
+			portForward = true
 		case args[i] == "--workspace" && i+1 < len(args):
 			workspaceName = args[i+1]
 			i++
@@ -65,6 +71,16 @@ func (d *Daemon) showGUI(args ...string) {
 					uw.showCoderWorkspaceDetail(*ws)
 				} else {
 					uw.showWorkspaceDetail(ws.Provider, ws.Name)
+				}
+				if portForward {
+					wsCopy := *ws
+					uw.showAdHocPortForwardDialog(wsCopy.Provider, wsCopy.Name, func() {
+						if wsCopy.Provider == provider.NameCoder {
+							uw.showCoderWorkspaceDetail(wsCopy)
+						} else {
+							uw.showWorkspaceDetail(wsCopy.Provider, wsCopy.Name)
+						}
+					})
 				}
 				return
 			}

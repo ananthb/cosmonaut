@@ -143,6 +143,10 @@ func (d *Daemon) coderWorkspaceActionsMenu(ws provider.Workspace) *fyne.Menu {
 		}),
 		fyne.NewMenuItemSeparator(),
 	}
+	items = append(items, fyne.NewMenuItem("Forward port...", func() {
+		go d.showGUI("--port-forward", "--workspace", ws.Name, "--provider", provider.NameCoder, resolvedName)
+	}))
+	items = append(items, fyne.NewMenuItemSeparator())
 	if target.Coder == nil || len(target.Coder.PortForwards) == 0 {
 		items = append(items, disabledMenuItem("No configured ports"))
 		return fyne.NewMenu("", items...)
@@ -246,6 +250,9 @@ func (d *Daemon) codespaceActionsMenu(cs codespace.Codespace, launchArgs string)
 		}),
 		fyne.NewMenuItem("Refresh ports", func() {
 			d.refreshPortsAsync(cs.Name, nil)
+		}),
+		fyne.NewMenuItem("Forward port...", func() {
+			go d.showGUI("--port-forward", "--workspace", cs.Name, "--provider", provider.NameGitHub, launchArgs)
 		}),
 		fyne.NewMenuItemSeparator(),
 	}
