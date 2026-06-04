@@ -41,6 +41,8 @@ type Daemon struct {
 	lastPollAt     time.Time
 	pollInFlight   bool
 	pollCond       *sync.Cond // signals when a poll slot frees; broadcast under mu
+	trayOpenedAt   time.Time  // last time the tray menu was opened; zero before first open
+	pendingRebuild bool       // a rebuild was deferred while the tray was in-use
 	stopCh         chan struct{}
 	sessions       *SessionTracker
 	forwards       *PortForwardManager

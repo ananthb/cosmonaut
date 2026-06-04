@@ -41,11 +41,27 @@ func (d *Daemon) watchTrayOpened() {
 	for {
 		select {
 		case <-systray.TrayOpenedCh:
-			d.maybePollAsync()
+			d.onTrayOpened()
 		case <-d.stopCh:
 			return
 		}
 	}
+}
+
+// onTrayOpened records the open timestamp (used as the start of the
+// interaction window during which rebuildTrayMenu defers), flushes any
+// rebuild that was deferred from a previous interaction window so the
+// user sees fresh data immediately, and kicks off a fresh poll.
+func (d *Daemon) onTrayOpened() {
+	d.mu.Lock()
+	pending := d.pendingRebuild
+	d.pendingRebuild = false
+	d.trayOpenedAt = time.Now()
+	d.mu.Unlock()
+	if pending {
+		d.applyTrayMenu()
+	}
+	d.maybePollAsync()
 }
 
 // maybePollAsync spawns a poll goroutine when a poll hasn't run in the
