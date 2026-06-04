@@ -40,6 +40,9 @@ type Daemon struct {
 	providerStatus map[string]ProviderStatus
 	lastPollAt     time.Time
 	pollInFlight   bool
+	pollCond       *sync.Cond // signals when a poll slot frees; broadcast under mu
+	trayOpenedAt   time.Time  // last time the tray menu was opened; zero before first open
+	pendingRebuild bool       // a rebuild was deferred while the tray was in-use
 	stopCh         chan struct{}
 	sessions       *SessionTracker
 	forwards       *PortForwardManager
@@ -99,7 +102,7 @@ func New(cfg *config.Config, configPath string) *Daemon {
 	if cfg != nil && cfg.Daemon != nil {
 		mode = cfg.Daemon.InhibitSleep
 	}
-	return &Daemon{
+	d := &Daemon{
 		Cfg:        cfg,
 		ConfigPath: configPath,
 		Runner:     codespace.DefaultGHRunner{},
@@ -107,6 +110,8 @@ func New(cfg *config.Config, configPath string) *Daemon {
 		sessions:   newSessionTracker(mode),
 		forwards:   newPortForwardManager(),
 	}
+	d.pollCond = sync.NewCond(&d.mu)
+	return d
 }
 
 // Run starts all applet components. It blocks until Stop is called.

@@ -150,8 +150,14 @@ func (c *Config) IsCoderConfigured() bool {
 
 // IsGitHubConfigured reports whether GitHub Codespaces is in use:
 // either as the effective provider (the default), or via any target
-// that doesn't declare a `coder` block. Symmetric to IsCoderConfigured
-// so the Codespaces menu stays visible when the user expects it.
+// that doesn't declare a `coder` block.
+//
+// Note the asymmetry with IsCoderConfigured: GitHub is the default
+// provider, so the absence of an explicit `coder` block on a target
+// makes that target an implicit GitHub target. A nil Config (no file
+// loaded yet) is therefore treated as "GitHub configured", which lets
+// the Codespaces tray submenu appear during early startup. Coder, by
+// contrast, only counts when targets opt in explicitly via t.Coder.
 func (c *Config) IsGitHubConfigured() bool {
 	if c == nil {
 		return true

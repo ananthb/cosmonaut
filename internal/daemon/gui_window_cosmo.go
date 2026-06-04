@@ -416,7 +416,8 @@ func (uw *unifiedWindow) showCosmoCodespaceDetail(csName, repo string) {
 			uw.showCosmoWelcome()
 		})
 	})
-	if !uw.daemon.canDeleteWorkspace(provider.NameGitHub) {
+	if reason := uw.daemon.deleteDisabledReason(provider.NameGitHub); reason != "" {
+		deleteBtn.SetText(fmt.Sprintf("Delete — %s", reason))
 		deleteBtn.Disable()
 	}
 
@@ -764,7 +765,8 @@ func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
 			uw.showCoderSummary()
 		})
 	})
-	if !uw.daemon.canDeleteWorkspace(provider.NameCoder) {
+	if reason := uw.daemon.deleteDisabledReason(provider.NameCoder); reason != "" {
+		deleteBtn.SetText(fmt.Sprintf("Delete — %s", reason))
 		deleteBtn.Disable()
 	}
 

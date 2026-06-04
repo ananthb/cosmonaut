@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/driver/desktop"
@@ -16,6 +17,13 @@ import (
 )
 
 const maxSubmenuCodespaces = 5
+
+// trayInteractionWindow is how long after a tray-opened event we treat
+// the menu as in-use. Calling SetSystemTrayMenu while the user is
+// navigating a submenu drops their focus and dismisses the submenu, so
+// rebuildTrayMenu defers within this window and flushes the deferred
+// rebuild the next time the tray opens.
+const trayInteractionWindow = 30 * time.Second
 
 // buildTrayMenu constructs the system tray menu from config, history,
 // and cached codespace state.
@@ -58,8 +66,7 @@ func (d *Daemon) buildTrayMenu() *fyne.Menu {
 
 func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 	all := d.Codespaces()
-	configured := d.Cfg == nil || d.Cfg.IsGitHubConfigured()
-	if len(all) == 0 && !configured {
+	if len(all) == 0 && !d.Cfg.IsGitHubConfigured() {
 		return nil
 	}
 
@@ -68,13 +75,7 @@ func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 	repos = hist.SortRepos(repos)
 
 	items := make([]*fyne.MenuItem, 0, len(repos)+2)
-
-	if status := d.ProviderStatus(provider.NameGitHub); !status.CheckedAt.IsZero() {
-		if msg := githubStatusMessage(status); msg != "" {
-			items = append(items, disabledMenuItem(msg))
-			items = append(items, fyne.NewMenuItemSeparator())
-		}
-	}
+	items = d.appendProviderStatusRow(items, provider.NameGitHub, githubStatusMessage)
 
 	if len(repos) == 0 {
 		items = append(items, disabledMenuItem("No codespaces"))
@@ -101,6 +102,23 @@ func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 	root := fyne.NewMenuItem("Codespaces", nil)
 	root.ChildMenu = fyne.NewMenu("", items...)
 	return root
+}
+
+// appendProviderStatusRow adds a disabled status row + separator to
+// items when the provider's last ProviderStatus has a problem to
+// report. Returns items unchanged when status is empty or the provider
+// hasn't been polled yet. msgFn maps a status to provider-specific
+// wording.
+func (d *Daemon) appendProviderStatusRow(items []*fyne.MenuItem, providerName string, msgFn func(ProviderStatus) string) []*fyne.MenuItem {
+	status := d.StatusFor(providerName)
+	if status.CheckedAt.IsZero() {
+		return items
+	}
+	msg := msgFn(status)
+	if msg == "" {
+		return items
+	}
+	return append(items, disabledMenuItem(msg), fyne.NewMenuItemSeparator())
 }
 
 // githubStatusMessage returns a short human-readable summary of the
@@ -141,13 +159,7 @@ func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {
 	})
 
 	items := make([]*fyne.MenuItem, 0, len(workspaces)+3)
-
-	if status := d.ProviderStatus(provider.NameCoder); !status.CheckedAt.IsZero() {
-		if msg := coderStatusMessage(status); msg != "" {
-			items = append(items, disabledMenuItem(msg))
-			items = append(items, fyne.NewMenuItemSeparator())
-		}
-	}
+	items = d.appendProviderStatusRow(items, provider.NameCoder, coderStatusMessage)
 
 	if len(workspaces) == 0 {
 		items = append(items, disabledMenuItem("No Coder workspaces"))
@@ -210,25 +222,27 @@ func (d *Daemon) coderWorkspaceActionsMenu(ws provider.Workspace) *fyne.Menu {
 		deleteItem,
 		fyne.NewMenuItemSeparator(),
 	}
-	items = append(items, fyne.NewMenuItem("Forward port...", func() {
-		go d.showGUI("--port-forward", "--workspace", ws.Name, "--provider", provider.NameCoder, resolvedName)
-	}))
-	items = append(items, fyne.NewMenuItemSeparator())
 	if target.Coder == nil || len(target.Coder.PortForwards) == 0 {
 		items = append(items, disabledMenuItem("No configured ports"))
-		return fyne.NewMenu("", items...)
-	}
-	for _, pf := range target.Coder.PortForwards {
-		pf := pf
-		remotePort := pf.RemotePort
-		localPort := pf.LocalPort
-		if localPort == 0 {
-			localPort = remotePort
+	} else {
+		for _, pf := range target.Coder.PortForwards {
+			pf := pf
+			remotePort := pf.RemotePort
+			localPort := pf.LocalPort
+			if localPort == 0 {
+				localPort = remotePort
+			}
+			item := fyne.NewMenuItem("Port "+coderPortForwardLabel(pf), nil)
+			item.ChildMenu = d.coderPortActionsMenu(ws.Name, pf)
+			items = append(items, item)
 		}
-		item := fyne.NewMenuItem("Port "+coderPortForwardLabel(pf), nil)
-		item.ChildMenu = d.coderPortActionsMenu(ws.Name, pf)
-		items = append(items, item)
 	}
+	items = append(items,
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem("Forward port...", func() {
+			go d.showGUI("--port-forward", "--workspace", ws.Name, "--provider", provider.NameCoder, resolvedName)
+		}),
+	)
 	return fyne.NewMenu("", items...)
 }
 
@@ -321,12 +335,6 @@ func (d *Daemon) codespaceActionsMenu(cs codespace.Codespace, launchArgs string)
 		fyne.NewMenuItem("Workspace settings...", func() {
 			go d.showGUI("--detail", "--workspace", cs.Name, "--provider", "github", launchArgs)
 		}),
-		fyne.NewMenuItem("Refresh ports", func() {
-			d.refreshPortsAsync(cs.Name, nil)
-		}),
-		fyne.NewMenuItem("Forward port...", func() {
-			go d.showGUI("--port-forward", "--workspace", cs.Name, "--provider", provider.NameGitHub, launchArgs)
-		}),
 		deleteItem,
 		fyne.NewMenuItemSeparator(),
 	}
@@ -347,6 +355,16 @@ func (d *Daemon) codespaceActionsMenu(cs codespace.Codespace, launchArgs string)
 			items = append(items, item)
 		}
 	}
+
+	items = append(items,
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem("Refresh ports", func() {
+			d.refreshPortsAsync(cs.Name, nil)
+		}),
+		fyne.NewMenuItem("Forward port...", func() {
+			go d.showGUI("--port-forward", "--workspace", cs.Name, "--provider", provider.NameGitHub, launchArgs)
+		}),
+	)
 
 	return fyne.NewMenu("", items...)
 }
@@ -454,12 +472,29 @@ func (d *Daemon) preferencesMenuItem() *fyne.MenuItem {
 	})
 }
 
-// rebuildTrayMenu rebuilds and replaces the system tray menu.
-// Safe to call from any goroutine.
+// rebuildTrayMenu rebuilds and replaces the system tray menu, unless
+// the user looks to be mid-interaction with the menu. In that case the
+// rebuild is recorded as pending and flushed the next time the tray
+// opens. Safe to call from any goroutine.
 func (d *Daemon) rebuildTrayMenu() {
 	if d.app == nil {
 		return
 	}
+	d.mu.Lock()
+	if !d.trayOpenedAt.IsZero() && time.Since(d.trayOpenedAt) < trayInteractionWindow {
+		d.pendingRebuild = true
+		d.mu.Unlock()
+		return
+	}
+	d.mu.Unlock()
+	d.applyTrayMenu()
+}
+
+// applyTrayMenu unconditionally replaces the tray menu on the Fyne
+// main thread. Callers should normally go through rebuildTrayMenu so
+// the interaction-window gate is honored; this is only for the tray
+// opened path that flushes deferred rebuilds.
+func (d *Daemon) applyTrayMenu() {
 	fyne.Do(func() {
 		if desk, ok := d.app.(desktop.App); ok {
 			desk.SetSystemTrayMenu(d.buildTrayMenu())
