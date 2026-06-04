@@ -134,6 +134,12 @@ func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {
 
 func (d *Daemon) coderWorkspaceActionsMenu(ws provider.Workspace) *fyne.Menu {
 	target, resolvedName := guiTargetForCoderWorkspace(d.Cfg, ws)
+	deleteItem := fyne.NewMenuItem("Delete workspace...", func() {
+		go d.showGUI("--delete", "--workspace", ws.Name, "--provider", provider.NameCoder, resolvedName)
+	})
+	if !d.canDeleteWorkspace(provider.NameCoder) {
+		deleteItem.Disabled = true
+	}
 	items := []*fyne.MenuItem{
 		fyne.NewMenuItem("Open in editor", func() {
 			go d.showGUI("--workspace", ws.Name, "--provider", provider.NameCoder, resolvedName)
@@ -141,6 +147,7 @@ func (d *Daemon) coderWorkspaceActionsMenu(ws provider.Workspace) *fyne.Menu {
 		fyne.NewMenuItem("Workspace settings...", func() {
 			go d.showGUI("--detail", "--workspace", ws.Name, "--provider", provider.NameCoder, resolvedName)
 		}),
+		deleteItem,
 		fyne.NewMenuItemSeparator(),
 	}
 	if target.Coder == nil || len(target.Coder.PortForwards) == 0 {
@@ -237,6 +244,12 @@ func (d *Daemon) codespaceSubmenu(repo, launchArgs string) *fyne.Menu {
 }
 
 func (d *Daemon) codespaceActionsMenu(cs codespace.Codespace, launchArgs string) *fyne.Menu {
+	deleteItem := fyne.NewMenuItem("Delete codespace...", func() {
+		go d.showGUI("--delete", "--workspace", cs.Name, "--provider", provider.NameGitHub, launchArgs)
+	})
+	if !d.canDeleteWorkspace(provider.NameGitHub) {
+		deleteItem.Disabled = true
+	}
 	items := []*fyne.MenuItem{
 		fyne.NewMenuItem("Open in editor", func() {
 			go d.showGUI("--workspace", cs.Name, "--provider", "github", launchArgs)
@@ -247,6 +260,7 @@ func (d *Daemon) codespaceActionsMenu(cs codespace.Codespace, launchArgs string)
 		fyne.NewMenuItem("Refresh ports", func() {
 			d.refreshPortsAsync(cs.Name, nil)
 		}),
+		deleteItem,
 		fyne.NewMenuItemSeparator(),
 	}
 

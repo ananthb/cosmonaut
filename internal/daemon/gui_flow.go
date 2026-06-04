@@ -20,6 +20,8 @@ import (
 //   - target name or owner/repo: open tree, expand that repo
 //   - "--workspace", name, "--provider", provider, target: direct launch
 //   - "--detail", "--workspace", name, "--provider", provider, target: show detail
+//   - "--delete", "--workspace", name, "--provider", provider, target:
+//     show detail and immediately fire the delete confirmation dialog
 func (d *Daemon) showGUI(args ...string) {
 	if d.app == nil {
 		log.Println("gui: app not initialized")
@@ -29,10 +31,14 @@ func (d *Daemon) showGUI(args ...string) {
 	// Parse args.
 	var targetArg, workspaceName, providerName string
 	detailOnly := false
+	deleteFlow := false
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--detail":
 			detailOnly = true
+		case args[i] == "--delete":
+			detailOnly = true
+			deleteFlow = true
 		case args[i] == "--workspace" && i+1 < len(args):
 			workspaceName = args[i+1]
 			i++
@@ -65,6 +71,17 @@ func (d *Daemon) showGUI(args ...string) {
 					uw.showCoderWorkspaceDetail(*ws)
 				} else {
 					uw.showWorkspaceDetail(ws.Provider, ws.Name)
+				}
+				if deleteFlow {
+					wsCopy := *ws
+					d.confirmAndDeleteWorkspace(uw.win, wsCopy.Provider, wsCopy.Name, func() {
+						uw.tree.Refresh()
+						if wsCopy.Provider == provider.NameCoder {
+							uw.showCoderSummary()
+						} else {
+							uw.showCosmoWelcome()
+						}
+					})
 				}
 				return
 			}
