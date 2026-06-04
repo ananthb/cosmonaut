@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"fmt"
-	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/dialog"
@@ -11,45 +10,24 @@ import (
 )
 
 // canDeleteWorkspace reports whether the daemon currently has the
-// ability to delete a workspace for the given provider. False when the
-// CLI is missing or the most recent list call failed with an auth-like
-// error — both indicate the destroy call would also fail. Used to
-// disable Delete UI rather than offering an action that can't succeed.
+// ability to delete a workspace for the given provider, based on the
+// ProviderStatus snapshot from the most recent poll. The status fields
+// — CLI availability and last list error — already encode the same
+// signals the destroy call needs, so we don't re-check here.
+//
+// If we haven't polled yet (CheckedAt is zero) we treat the provider
+// as deletable; the actual call will surface a real error if it isn't.
+// Otherwise the button is disabled when the CLI is missing or the last
+// list call failed, since both predict the delete would fail too.
 func (d *Daemon) canDeleteWorkspace(providerName string) bool {
-	switch providerName {
-	case provider.NameGitHub:
-		if err := provider.RequireCommand("gh"); err != nil {
-			return false
-		}
-	case provider.NameCoder:
-		if err := provider.RequireCommand("coder"); err != nil {
-			return false
-		}
-	default:
+	if providerName != provider.NameGitHub && providerName != provider.NameCoder {
 		return false
 	}
-	listErr := d.ListErr()
-	if listErr == nil {
+	status := d.ProviderStatus(providerName)
+	if status.CheckedAt.IsZero() {
 		return true
 	}
-	return !looksLikeAuthError(listErr)
-}
-
-func looksLikeAuthError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(msg, "not authenticated"),
-		strings.Contains(msg, "not logged"),
-		strings.Contains(msg, "authentication"),
-		strings.Contains(msg, "auth status"),
-		strings.Contains(msg, "unauthorized"),
-		strings.Contains(msg, `needs the "codespace" scope`):
-		return true
-	}
-	return false
+	return status.Available && status.Err == nil
 }
 
 // confirmAndDeleteWorkspace shows a destructive confirmation dialog
