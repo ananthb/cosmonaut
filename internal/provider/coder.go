@@ -172,7 +172,13 @@ func (m *CoderManager) StartWorkspace(workspace *Workspace) (*Workspace, error) 
 }
 
 func (m *CoderManager) DeleteWorkspace(name string) error {
-	return fmt.Errorf("deleting Coder workspaces is not yet supported from Cosmonaut")
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("workspace name is required")
+	}
+	if _, err := m.run("delete", "--yes", name); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (m *CoderManager) EnsureReachable(workspace *Workspace) error {

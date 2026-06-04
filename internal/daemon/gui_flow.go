@@ -22,6 +22,8 @@ import (
 //   - "--detail", "--workspace", name, "--provider", provider, target: show detail
 //   - "--port-forward", "--workspace", name, "--provider", provider, target:
 //     show detail and immediately open the ad-hoc port forward dialog
+//   - "--delete", "--workspace", name, "--provider", provider, target:
+//     show detail and immediately fire the delete confirmation dialog
 func (d *Daemon) showGUI(args ...string) {
 	if d.app == nil {
 		log.Println("gui: app not initialized")
@@ -32,6 +34,7 @@ func (d *Daemon) showGUI(args ...string) {
 	var targetArg, workspaceName, providerName string
 	detailOnly := false
 	portForward := false
+	deleteFlow := false
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--detail":
@@ -39,6 +42,9 @@ func (d *Daemon) showGUI(args ...string) {
 		case args[i] == "--port-forward":
 			detailOnly = true
 			portForward = true
+		case args[i] == "--delete":
+			detailOnly = true
+			deleteFlow = true
 		case args[i] == "--workspace" && i+1 < len(args):
 			workspaceName = args[i+1]
 			i++
@@ -79,6 +85,17 @@ func (d *Daemon) showGUI(args ...string) {
 							uw.showCoderWorkspaceDetail(wsCopy)
 						} else {
 							uw.showWorkspaceDetail(wsCopy.Provider, wsCopy.Name)
+						}
+					})
+				}
+				if deleteFlow {
+					wsCopy := *ws
+					d.confirmAndDeleteWorkspace(uw.win, wsCopy.Provider, wsCopy.Name, func() {
+						uw.tree.Refresh()
+						if wsCopy.Provider == provider.NameCoder {
+							uw.showCoderSummary()
+						} else {
+							uw.showCosmoWelcome()
 						}
 					})
 				}
