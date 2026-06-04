@@ -41,9 +41,6 @@ func (d *Daemon) buildTrayMenu() *fyne.Menu {
 	items = append(items, fyne.NewMenuItem("Launch...", func() {
 		go d.showGUI()
 	}))
-	items = append(items, fyne.NewMenuItem("Refresh workspaces", func() {
-		go d.poll()
-	}))
 
 	// Preferences.
 	items = append(items, fyne.NewMenuItemSeparator())
@@ -104,10 +101,6 @@ func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {
 	})
 
 	items := make([]*fyne.MenuItem, 0, len(workspaces)+3)
-	items = append(items, fyne.NewMenuItem("Refresh workspaces", func() {
-		d.refreshCoderWorkspacesAsync(nil)
-	}))
-	items = append(items, fyne.NewMenuItemSeparator())
 	if len(workspaces) == 0 {
 		items = append(items, disabledMenuItem("No Coder workspaces"))
 		items = append(items, fyne.NewMenuItem("Create new...", func() {

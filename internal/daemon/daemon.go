@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -16,6 +17,11 @@ import (
 	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/provider"
 )
+
+// autoPollMinInterval is the shortest gap allowed between event-driven
+// polls. Tray-open and window-focus events fire often; this debounce
+// keeps us from re-hitting the backends on every interaction.
+const autoPollMinInterval = 30 * time.Second
 
 // Daemon is the long-running background process that hosts the system tray,
 // hotkey listener, and codespace poller.
@@ -31,6 +37,8 @@ type Daemon struct {
 	workspaces []provider.Workspace
 	portCache  map[string]portCacheEntry
 	listErr    error
+	lastPollAt time.Time
+	pollInFlight bool
 	stopCh     chan struct{}
 	sessions   *SessionTracker
 	forwards   *PortForwardManager
@@ -118,6 +126,10 @@ func (d *Daemon) Run() error {
 	// Start background workers.
 	go d.startPoller()
 	go d.startHotkeyListener()
+	go d.watchTrayOpened()
+	d.app.Lifecycle().SetOnEnteredForeground(func() {
+		d.maybePollAsync()
+	})
 	d.startPreWarm()
 
 	// Create a hidden master window so popover windows don't quit the app on close.

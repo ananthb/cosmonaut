@@ -26,8 +26,7 @@ The default path is `cosmonaut.config.json` in the current directory for the CLI
   // Applet settings (menu bar icon, hotkey, codespace lifecycle).
   "daemon": {
     "hotkey": "Cmd+Shift+S",
-    "hotkeyAction": "picker",
-    "pollInterval": "5m"
+    "hotkeyAction": "picker"
   },
 
   "targets": {
@@ -105,5 +104,4 @@ These go in the top-level `"daemon"` object and configure the menu bar applet.
 | `hotkey` | string | Global hotkey (default `Cmd+Shift+S` on macOS, `Ctrl+Shift+S` elsewhere) |
 | `hotkeyAction` | string | `picker` (default), `previous`, or `default` |
 | `terminal` | string | Reserved for selecting the terminal emulator used to launch Neovim. Parsed but not yet wired up; Neovim currently auto-detects (Terminal.app on macOS, first of ghostty/alacritty/kitty/gnome-terminal/xterm on Linux). |
-| `pollInterval` | string | Codespace poll interval (default `5m`) |
 | `inhibitSleep` | string | Hold a sleep inhibitor while a launched SSH session is alive: `off` (default), `sleep`, or `sleep+shutdown`. On macOS, `sleep+shutdown` degrades to `sleep` (no user-space shutdown inhibitor). |

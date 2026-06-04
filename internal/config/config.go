@@ -36,7 +36,6 @@ type DaemonConfig struct {
 	Hotkey       string `json:"hotkey,omitempty"`       // e.g. "Cmd+Shift+S" (macOS) or "Ctrl+Shift+S" (Linux)
 	HotkeyAction string `json:"hotkeyAction,omitempty"` // "picker" (default), "previous", or "default"
 	Terminal     string `json:"terminal,omitempty"`     // terminal app to launch picker in; "auto" to detect
-	PollInterval string `json:"pollInterval,omitempty"` // how often to poll codespace state (e.g. "5m")
 	InhibitSleep string `json:"inhibitSleep,omitempty"` // "off" (default), "sleep", or "sleep+shutdown"
 }
 
@@ -175,7 +174,6 @@ var DaemonFieldDocs = []FieldDoc{
 	{"hotkey", "string", false, "Global hotkey (e.g. Cmd+Shift+S)"},
 	{"hotkeyAction", "string", false, "Hotkey behavior: picker (default), previous, or default"},
 	{"terminal", "string", false, "Terminal app for picker; auto to detect"},
-	{"pollInterval", "string", false, "Codespace poll interval (e.g. 5m)"},
 	{"inhibitSleep", "string", false, "Hold sleep/shutdown inhibitor while a codespace session is active: off (default), sleep, or sleep+shutdown"},
 }
 
