@@ -411,14 +411,14 @@ func (uw *unifiedWindow) showCosmoCodespaceDetail(csName, repo string) {
 	})
 
 	deleteBtn := destructiveButton("Delete", func() {
-		go func() {
-			_ = codespace.DeleteCodespace(uw.daemon.Runner, cs.Name)
-			fyne.Do(func() {
-				uw.tree.Refresh()
-				uw.showCosmoWelcome()
-			})
-		}()
+		uw.daemon.confirmAndDeleteWorkspace(uw.win, provider.NameGitHub, cs.Name, func() {
+			uw.tree.Refresh()
+			uw.showCosmoWelcome()
+		})
 	})
+	if !uw.daemon.canDeleteWorkspace(provider.NameGitHub) {
+		deleteBtn.Disable()
+	}
 
 	actions := container.NewHBox(openBtn, editorSel, sshBtn, layout.NewSpacer(), deleteBtn)
 
@@ -758,6 +758,16 @@ func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
 		})
 	})
 
+	deleteBtn := destructiveButton("Delete", func() {
+		uw.daemon.confirmAndDeleteWorkspace(uw.win, provider.NameCoder, ws.Name, func() {
+			uw.tree.Refresh()
+			uw.showCoderSummary()
+		})
+	})
+	if !uw.daemon.canDeleteWorkspace(provider.NameCoder) {
+		deleteBtn.Disable()
+	}
+
 	nameVal := widget.NewLabel(ws.Name)
 	nameVal.TextStyle = fyne.TextStyle{Monospace: true}
 	stateVal := widget.NewLabel(ws.State)
@@ -790,7 +800,7 @@ func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
 		heroTitle,
 		subtitle,
 		widget.NewSeparator(),
-		container.NewHBox(openBtn, editorSel, layout.NewSpacer(), refreshBtn),
+		container.NewHBox(openBtn, editorSel, layout.NewSpacer(), refreshBtn, deleteBtn),
 		widget.NewSeparator(),
 		info,
 		widget.NewSeparator(),
