@@ -12,8 +12,10 @@ package doctor
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
+	"github.com/linuskendall/cosmonaut/internal/provider"
 	"github.com/linuskendall/cosmonaut/internal/sshconfig"
 )
 
@@ -66,20 +68,22 @@ type Issue struct {
 const (
 	CodespaceScopeID = "gh-codespace-scope"
 	HostStarID       = "ssh-host-star"
+	IncludeDirID     = "ssh-include-dir"
 )
 
 // Catalog returns all checks. listErr is the most recent error from a
 // `gh codespace list` attempt; the daemon supplies its cached value, the
 // CLI runs a fresh list at call time.
 func Catalog(listErr func() error) []Check {
-	return CatalogForProvider("github", listErr)
+	return CatalogForProvider(provider.NameGitHub, listErr)
 }
 
 func CatalogForProvider(providerName string, listErr func() error) []Check {
 	checks := []Check{
 		sshHostStarCheck(),
+		sshIncludeDirCheck(),
 	}
-	if providerName == "github" {
+	if providerName == provider.NameGitHub {
 		checks = append([]Check{ghCodespaceScopeCheck(listErr)}, checks...)
 	}
 	return checks
@@ -114,6 +118,75 @@ func ghCodespaceScopeCheck(listErr func() error) Check {
 		},
 		FixCommand: func() string { return bare },
 	}
+}
+
+// sshIncludeDirCheck verifies that the include directory cosmonaut
+// writes per-workspace SSH configs into (typically ~/.ssh/cosmonaut/)
+// exists and is at least 0700. The directory also hosts ControlMaster
+// sockets — `ControlPath ~/.ssh/cosmonaut/cm-%C` silently fails to
+// create the master socket when the parent dir is missing, so a
+// missing dir manifests as slow reconnects rather than an obvious
+// error.
+func sshIncludeDirCheck() Check {
+	return Check{
+		ID:    IncludeDirID,
+		Title: "SSH include directory exists",
+		Description: "Cosmonaut writes per-workspace SSH configs and " +
+			"ControlMaster sockets into ~/.ssh/cosmonaut/. If the " +
+			"directory is missing or world-readable, ControlMaster " +
+			"silently fails and reconnects feel slow.",
+		Status: func() *Issue {
+			paths := sshconfig.ResolvePaths()
+			return includeDirIssue(paths.IncludeDir)
+		},
+		Fix: func() error {
+			paths := sshconfig.ResolvePaths()
+			if err := os.MkdirAll(paths.IncludeDir, 0o700); err != nil {
+				return fmt.Errorf("create %s: %w", paths.IncludeDir, err)
+			}
+			// MkdirAll leaves existing dirs untouched, so tighten
+			// permissions explicitly if the dir already existed with
+			// a looser mode.
+			if err := os.Chmod(paths.IncludeDir, 0o700); err != nil {
+				return fmt.Errorf("chmod %s: %w", paths.IncludeDir, err)
+			}
+			return nil
+		},
+	}
+}
+
+// includeDirIssue returns the active issue for the include directory at
+// dir, or nil if the directory exists, is a directory, and has
+// permissions of 0700 or stricter. Split out so tests can drive it
+// without touching the real ~/.ssh/cosmonaut.
+func includeDirIssue(dir string) *Issue {
+	info, err := os.Stat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &Issue{
+				Severity: SeverityError,
+				Summary:  fmt.Sprintf("%s does not exist; ControlMaster sockets will silently fail to be created.", dir),
+			}
+		}
+		return &Issue{
+			Severity: SeverityError,
+			Summary:  fmt.Sprintf("cannot stat %s: %v", dir, err),
+		}
+	}
+	if !info.IsDir() {
+		return &Issue{
+			Severity: SeverityError,
+			Summary:  fmt.Sprintf("%s is not a directory.", dir),
+		}
+	}
+	// Reject any bit that's looser than 0700 (group/other access).
+	if info.Mode().Perm()&0o077 != 0 {
+		return &Issue{
+			Severity: SeverityWarning,
+			Summary:  fmt.Sprintf("%s has permissions %#o; expected 0700 or stricter.", dir, info.Mode().Perm()),
+		}
+	}
+	return nil
 }
 
 func sshHostStarCheck() Check {
