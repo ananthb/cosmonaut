@@ -40,7 +40,9 @@ func shellQuote(s string) string {
 // fires. Under heavy parallel test load (go test ./... at full
 // concurrency), sh fork latency can exceed 1s; the value is set high
 // enough that printf reliably reaches the stderr pipe before the
-// deadline cancels the context.
+// deadline cancels the context. The fake script's sleep duration must
+// also exceed this so the context (not the script's normal exit) wins
+// the race.
 const runCtxTimeout = 5 * time.Second
 
 // pathWithFakeCoder returns a PATH value that resolves "coder" to the fake
@@ -51,7 +53,7 @@ func pathWithFakeCoder(dir string) string {
 }
 
 func TestRunCtxTimeoutIncludesStderrTail(t *testing.T) {
-	dir := writeFakeCoder(t, "boom: backend unreachable\n", 5)
+	dir := writeFakeCoder(t, "boom: backend unreachable\n", 30)
 	t.Setenv("PATH", pathWithFakeCoder(dir))
 
 	m := &CoderManager{}
@@ -72,7 +74,7 @@ func TestRunCtxTimeoutIncludesStderrTail(t *testing.T) {
 }
 
 func TestRunCtxTimeoutWithoutStderrOmitsTail(t *testing.T) {
-	dir := writeFakeCoder(t, "", 5)
+	dir := writeFakeCoder(t, "", 30)
 	t.Setenv("PATH", pathWithFakeCoder(dir))
 
 	m := &CoderManager{}
@@ -95,7 +97,7 @@ func TestRunCtxTimeoutWithoutStderrOmitsTail(t *testing.T) {
 
 func TestRunCtxTimeoutTrimsLongStderr(t *testing.T) {
 	long := strings.Repeat("x", 500) + "TAIL_MARKER"
-	dir := writeFakeCoder(t, long, 5)
+	dir := writeFakeCoder(t, long, 30)
 	t.Setenv("PATH", pathWithFakeCoder(dir))
 
 	m := &CoderManager{}

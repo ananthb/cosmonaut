@@ -16,7 +16,7 @@ func waitPidExit(pid int) {
 		fallbackWaitPid(pid)
 		return
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 
 	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
 	for {

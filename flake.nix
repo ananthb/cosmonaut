@@ -42,6 +42,35 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
+        # Linux cgo deps for fyne (GL/X11/glfw) + systray (gtk3).
+        cgoLinuxLibs = pkgs.lib.optionals pkgs.stdenv.isLinux [
+          pkgs.gtk3
+          pkgs.libappindicator-gtk3
+          pkgs.libGL
+          pkgs.xorg.libX11
+          pkgs.xorg.libXcursor
+          pkgs.xorg.libXi
+          pkgs.xorg.libXinerama
+          pkgs.xorg.libXrandr
+          pkgs.xorg.libXxf86vm
+          pkgs.xorg.libXext
+          pkgs.xorg.libXfixes
+          pkgs.xorg.libXrender
+          # X protocol headers (X.h, Xfuncproto.h) — Xlib.h #include's them.
+          pkgs.xorg.xorgproto
+        ];
+
+        # writeShellApplication doesn't run stdenv's cc-wrapper setup
+        # hook, so the lint/test apps must inject these themselves:
+        # PKG_CONFIG_PATH for go-gl/gl's `#cgo pkg-config: gl`,
+        # CGO_CFLAGS for hotkey/glfw's hand-written `#include <X11/...>`.
+        cgoLinuxPkgConfigPath =
+          pkgs.lib.makeSearchPathOutput "dev" "lib/pkgconfig" cgoLinuxLibs;
+        cgoLinuxCFLAGS = builtins.concatStringsSep " "
+          (map (lib: "-isystem ${pkgs.lib.getDev lib}/include") cgoLinuxLibs);
+        cgoLinuxLDFLAGS = builtins.concatStringsSep " "
+          (map (lib: "-L${pkgs.lib.getLib lib}/lib") cgoLinuxLibs);
+
         # cosmonautFromSource is the hermetic build used as input to
         # the AppImage and as the home-manager default package binding.
         # The user-facing release tarball + DMG come from goreleaser
@@ -83,20 +112,7 @@
 
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.apple-sdk
-          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-            pkgs.gtk3
-            pkgs.libappindicator-gtk3
-            # Fyne / GLFW dependencies
-            pkgs.libGL
-            pkgs.xorg.libX11
-            pkgs.xorg.libXcursor
-            pkgs.xorg.libXi
-            pkgs.xorg.libXinerama
-            pkgs.xorg.libXrandr
-            pkgs.xorg.libXxf86vm
-            pkgs.xorg.libXext
-            pkgs.xorg.libXfixes
-          ];
+          ] ++ cgoLinuxLibs;
 
           postInstall = ''
             wrapProgram $out/bin/cosmonaut \
@@ -164,19 +180,7 @@
             pkgs.autoPatchelfHook
           ];
 
-          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
-            pkgs.gtk3
-            pkgs.libappindicator-gtk3
-            pkgs.libGL
-            pkgs.xorg.libX11
-            pkgs.xorg.libXcursor
-            pkgs.xorg.libXi
-            pkgs.xorg.libXinerama
-            pkgs.xorg.libXrandr
-            pkgs.xorg.libXxf86vm
-            pkgs.xorg.libXext
-            pkgs.xorg.libXfixes
-          ];
+          buildInputs = cgoLinuxLibs;
 
           dontBuild = true;
 
@@ -213,13 +217,23 @@
             platforms = [ "x86_64-linux" "aarch64-darwin" ];
           };
         };
+        cgoEnvSetup = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+          export PKG_CONFIG_PATH="${cgoLinuxPkgConfigPath}:''${PKG_CONFIG_PATH:-}"
+          export CGO_CFLAGS="${cgoLinuxCFLAGS} ''${CGO_CFLAGS:-}"
+          export CGO_LDFLAGS="${cgoLinuxLDFLAGS} ''${CGO_LDFLAGS:-}"
+        '';
+
         # cosmonautLint runs the gofumpt + golangci-lint gate. Exposed
         # as `apps.lint` so the pre-commit hook and CI both go through
         # `nix run .#lint`.
         cosmonautLint = pkgs.writeShellApplication {
           name = "cosmonaut-lint";
-          runtimeInputs = [ pkgs.go pkgs.gofumpt pkgs.golangci-lint ];
-          text = ''
+          runtimeInputs = [ pkgs.go pkgs.gofumpt pkgs.golangci-lint ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              pkgs.pkg-config
+              pkgs.stdenv.cc
+            ];
+          text = cgoEnvSetup + ''
             unformatted="$(gofumpt -l .)"
             if [ -n "$unformatted" ]; then
               echo "gofumpt found unformatted files:" >&2
@@ -240,14 +254,13 @@
           runtimeInputs = [ pkgs.go ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
             pkgs.xvfb-run
             pkgs.pkg-config
-            pkgs.gtk3
-            pkgs.libGL
+            pkgs.stdenv.cc
           ];
-          text = if pkgs.stdenv.isLinux then ''
+          text = cgoEnvSetup + (if pkgs.stdenv.isLinux then ''
             exec xvfb-run -a go test ./...
           '' else ''
             exec go test ./...
-          '';
+          '');
         };
 
         # cosmonautBuild orchestrates lint + test as a single command;
