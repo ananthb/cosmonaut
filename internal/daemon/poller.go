@@ -46,6 +46,12 @@ func (d *Daemon) startPoller() {
 // debounced refresh. Wakes on macOS (NSMenu menuWillOpen:) and Linux
 // (DBusMenu "opened"); does nothing on platforms where the underlying
 // systray library doesn't drive the channel.
+//
+// TODO(systray): fyne.io/systray does not currently expose a tray-closed
+// channel. When/if one is added, hook it here to reset d.trayOpenedAt
+// on close and immediately flush any pending rebuild. Until then, the
+// interaction-window timeout in rebuildTrayMenu's gate is the only
+// signal we have that the user has finished navigating the menu.
 func (d *Daemon) watchTrayOpened() {
 	for {
 		select {
@@ -58,18 +64,26 @@ func (d *Daemon) watchTrayOpened() {
 }
 
 // onTrayOpened records the open timestamp (used as the start of the
-// interaction window during which rebuildTrayMenu defers), flushes any
-// rebuild that was deferred from a previous interaction window so the
-// user sees fresh data immediately, and kicks off a fresh poll.
+// interaction window during which rebuildTrayMenu defers) and kicks
+// off a fresh poll. It does NOT flush any pendingRebuild here: applying
+// the menu as the tray opens still dismisses the user's first click on
+// some platforms. Instead, rebuildTrayMenu's timer fires after the
+// interaction window elapses, by which point the user is no longer
+// expected to be navigating the freshly opened menu.
 func (d *Daemon) onTrayOpened() {
 	d.mu.Lock()
-	pending := d.pendingRebuild
-	d.pendingRebuild = false
-	d.trayOpenedAt = time.Now()
-	d.mu.Unlock()
-	if pending {
-		d.applyTrayMenu()
+	d.trayOpenedAt = d.now()
+	// If a rebuild is pending, make sure the retry timer is armed for
+	// at least one full interaction window from now — otherwise an
+	// earlier timer could fire mid-interaction.
+	if d.pendingRebuild {
+		if d.rebuildTimer != nil {
+			d.rebuildTimer.Stop()
+			d.rebuildTimer = nil
+		}
+		d.armRebuildTimerLocked(trayInteractionWindow)
 	}
+	d.mu.Unlock()
 	d.maybePollAsync()
 }
 
