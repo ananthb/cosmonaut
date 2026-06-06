@@ -347,16 +347,24 @@
           # Install a pre-commit hook that runs the lint app. Idempotent
           # — only overwrites the cosmonaut-managed marker, so a user's
           # custom hook is left alone.
+          #
+          # The hook body uses a quoted heredoc (<<'EOF') so the shell
+          # never expands variables inside it; the marker is written
+          # separately via printf. This means future edits can drop
+          # `$VAR` references into the body without worrying about
+          # silent shell expansion at flake-eval time.
           shellHook = ''
             hook=".git/hooks/pre-commit"
             marker="# cosmonaut-managed"
             if [ -d .git ] && { [ ! -f "$hook" ] || grep -q "$marker" "$hook"; }; then
               mkdir -p .git/hooks
-              cat > "$hook" <<EOF
-            #!/usr/bin/env bash
-            $marker
+              {
+                printf '%s\n' '#!/usr/bin/env bash'
+                printf '%s\n' "$marker"
+                cat <<'EOF'
             exec nix run .#lint
             EOF
+              } > "$hook"
               chmod +x "$hook"
             fi
           '';
