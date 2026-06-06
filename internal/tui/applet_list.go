@@ -123,7 +123,7 @@ func (m listModel) handleKey(msg tea.KeyMsg, d *AppletData) (listModel, tea.Cmd)
 		m.applyFilter()
 	case "n":
 		if m.filter == "" {
-			return m, switchTo(viewCreate, nil)
+			return m, switchToFresh(viewCreate, nil)
 		}
 		m.filter += key
 		m.applyFilter()
