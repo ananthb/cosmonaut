@@ -21,9 +21,45 @@ const maxSubmenuCodespaces = 5
 // trayInteractionWindow is how long after a tray-opened event we treat
 // the menu as in-use. Calling SetSystemTrayMenu while the user is
 // navigating a submenu drops their focus and dismisses the submenu, so
-// rebuildTrayMenu defers within this window and flushes the deferred
-// rebuild the next time the tray opens.
+// rebuildTrayMenu defers within this window. The deferred rebuild is
+// flushed by a timer that fires once the window expires, rather than
+// at the start of the next tray-open event (which would still race the
+// user's first click).
 const trayInteractionWindow = 30 * time.Second
+
+// trayApplyCooldown is the minimum gap between two SetSystemTrayMenu
+// calls. Even when no interaction window is active, back-to-back applies
+// (e.g. a fast poll completing right after a config change) can briefly
+// flicker the menu; this cooldown coalesces them.
+const trayApplyCooldown = 2 * time.Second
+
+// Tray rebuild gate semantics
+// ---------------------------
+//
+// The system tray menu is a shared mutable resource. Every call to
+// SetSystemTrayMenu replaces the menu wholesale, which on macOS and
+// Linux has the side effect of closing any open submenu the user is
+// currently navigating. rebuildTrayMenu is therefore guarded by two
+// gates, both checked atomically under d.mu:
+//
+//  1. Interaction window: if the tray was opened less than
+//     trayInteractionWindow ago, we assume the user may still be
+//     browsing the menu. Apply is deferred. (We have no portable
+//     "menu closed" signal from fyne.io/systray; see the TODO in
+//     watchTrayOpened.)
+//
+//  2. Cooldown: if applyTrayMenu ran less than trayApplyCooldown ago,
+//     defer this apply to coalesce a burst of back-to-back rebuilds.
+//
+// When either gate trips, pendingRebuild is set and a single shared
+// timer (rebuildTimer) is armed to retry once the gate is expected to
+// have cleared. Subsequent rebuild requests during the gate window are
+// idempotent: they set pendingRebuild (already true) and bail out.
+//
+// onTrayOpened intentionally does NOT flush a pending rebuild right
+// away — doing so would replace the menu as the user clicks it. The
+// flush is scheduled via the same timer mechanism, firing after the
+// interaction window elapses.
 
 // buildTrayMenu constructs the system tray menu from config, history,
 // and cached codespace state.
@@ -466,28 +502,100 @@ func (d *Daemon) preferencesMenuItem() *fyne.MenuItem {
 }
 
 // rebuildTrayMenu rebuilds and replaces the system tray menu, unless
-// the user looks to be mid-interaction with the menu. In that case the
-// rebuild is recorded as pending and flushed the next time the tray
-// opens. Safe to call from any goroutine.
+// the user looks to be mid-interaction with the menu or a recent apply
+// is still cooling down. In either case the rebuild is recorded as
+// pending and a timer is armed to retry once the relevant gate expires.
+// Safe to call from any goroutine.
 func (d *Daemon) rebuildTrayMenu() {
-	if d.app == nil {
+	if d.app == nil && d.applyTrayMenuFunc == nil {
 		return
 	}
 	d.mu.Lock()
-	if !d.trayOpenedAt.IsZero() && time.Since(d.trayOpenedAt) < trayInteractionWindow {
+	wait, ok := d.gateWaitLocked()
+	if !ok {
 		d.pendingRebuild = true
+		d.armRebuildTimerLocked(wait)
 		d.mu.Unlock()
 		return
 	}
+	d.pendingRebuild = false
+	d.mu.Unlock()
+	d.applyTrayMenu()
+}
+
+// gateWaitLocked returns (wait, ok) where ok is true when both rebuild
+// gates are clear and an apply may proceed immediately. When ok is
+// false, wait is the duration after which the next gate is expected to
+// clear, so the caller can arm a follow-up timer. d.mu must be held.
+func (d *Daemon) gateWaitLocked() (time.Duration, bool) {
+	now := d.now()
+	var wait time.Duration
+	if !d.trayOpenedAt.IsZero() {
+		if remain := trayInteractionWindow - now.Sub(d.trayOpenedAt); remain > 0 {
+			if remain > wait {
+				wait = remain
+			}
+		}
+	}
+	if !d.lastApplyAt.IsZero() {
+		if remain := trayApplyCooldown - now.Sub(d.lastApplyAt); remain > 0 {
+			if remain > wait {
+				wait = remain
+			}
+		}
+	}
+	return wait, wait == 0
+}
+
+// armRebuildTimerLocked (re)arms the shared rebuild timer so it fires
+// after wait elapses. If an earlier timer is still pending we leave it:
+// the gate is re-checked on fire, so the worst case is one extra wakeup.
+// d.mu must be held.
+func (d *Daemon) armRebuildTimerLocked(wait time.Duration) {
+	if wait <= 0 {
+		wait = trayApplyCooldown
+	}
+	if d.rebuildTimer != nil {
+		return
+	}
+	d.rebuildTimer = time.AfterFunc(wait, d.flushPendingRebuild)
+}
+
+// flushPendingRebuild is the timer callback for a deferred rebuild. It
+// drops the timer reference, re-evaluates the gate, and either applies
+// or re-arms the timer for a future retry. Spurious wakeups (no pending
+// rebuild) are safe no-ops.
+func (d *Daemon) flushPendingRebuild() {
+	d.mu.Lock()
+	d.rebuildTimer = nil
+	if !d.pendingRebuild {
+		d.mu.Unlock()
+		return
+	}
+	wait, ok := d.gateWaitLocked()
+	if !ok {
+		d.armRebuildTimerLocked(wait)
+		d.mu.Unlock()
+		return
+	}
+	d.pendingRebuild = false
 	d.mu.Unlock()
 	d.applyTrayMenu()
 }
 
 // applyTrayMenu unconditionally replaces the tray menu on the Fyne
-// main thread. Callers should normally go through rebuildTrayMenu so
-// the interaction-window gate is honored; this is only for the tray
-// opened path that flushes deferred rebuilds.
+// main thread and records the apply time so the cooldown gate can
+// observe it. Callers should normally go through rebuildTrayMenu so
+// both gates are honored.
 func (d *Daemon) applyTrayMenu() {
+	d.mu.Lock()
+	d.lastApplyAt = d.now()
+	d.mu.Unlock()
+
+	if d.applyTrayMenuFunc != nil {
+		d.applyTrayMenuFunc()
+		return
+	}
 	fyne.Do(func() {
 		if desk, ok := d.app.(desktop.App); ok {
 			desk.SetSystemTrayMenu(d.buildTrayMenu())
