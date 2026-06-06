@@ -30,16 +30,13 @@ func shellCmd(configPath *string) *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "shell [target]",
-		Short: "Open an SSH shell to a workspace (optionally wrapped in tmux)",
-		Long: `Open an interactive SSH shell to a workspace in the current terminal.
+		Short: "Open an SSH shell to a workspace",
+		Long: `Open an SSH shell to a workspace in the current terminal.
 
-When --tmux is set (or the workspace has tmux enabled in config), the shell
-runs inside a long-lived tmux session named "cosmonaut" on the remote — so an
-SSH drop, sleep, or network change can be recovered by re-running the command
-and reattaching to the same shell.
-
-ControlMaster multiplexing (enabled by default) makes repeat invocations
-share a TCP connection, so reconnects feel instant.`,
+With --tmux (or the per-workspace tmux setting), the remote shell runs inside
+a long-lived tmux session, so re-running this command reattaches to the same
+session after an SSH drop. ControlMaster multiplexing makes reconnects feel
+instant.`,
 		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -60,9 +57,9 @@ share a TCP connection, so reconnects feel instant.`,
 			return runShell(*configPath, targetName, codespaceName, tmuxOverride, cmOverride)
 		},
 	}
-	cmd.Flags().StringVar(&codespaceName, "codespace", "", "specific codespace/workspace name (skip selection)")
-	cmd.Flags().BoolVar(&tmux, "tmux", false, "wrap the remote shell in `tmux new -A -s cosmonaut` (overrides per-workspace config)")
-	cmd.Flags().BoolVar(&controlMaster, "control-master", true, "enable OpenSSH ControlMaster multiplexing (overrides per-workspace config)")
+	cmd.Flags().StringVar(&codespaceName, "codespace", "", "specific workspace name, skipping selection")
+	cmd.Flags().BoolVar(&tmux, "tmux", false, "wrap the remote shell in a persistent tmux session")
+	cmd.Flags().BoolVar(&controlMaster, "control-master", true, "use SSH ControlMaster multiplexing for instant reconnects")
 	return cmd
 }
 
