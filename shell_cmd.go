@@ -12,6 +12,7 @@ import (
 	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/provider"
 	"github.com/linuskendall/cosmonaut/internal/sshconfig"
+	"github.com/linuskendall/cosmonaut/internal/terminal"
 )
 
 // shellCmd implements `cosmonaut shell [target]`. It opens an interactive SSH
@@ -190,20 +191,10 @@ func execSSHShell(alias, workspacePath string, useTmux bool) error {
 func buildRemoteShellCommand(workspacePath string, useTmux bool) string {
 	cd := ""
 	if workspacePath != "" {
-		cd = fmt.Sprintf("cd %s && ", shellQuote(workspacePath))
+		cd = fmt.Sprintf("cd %s && ", terminal.ShellQuote(workspacePath))
 	}
 	if useTmux {
 		return cd + "tmux new -A -s cosmonaut"
 	}
 	return cd + "exec $SHELL -l"
-}
-
-func shellQuote(s string) string {
-	if s == "" {
-		return "''"
-	}
-	if !strings.ContainsAny(s, " \t\"'$`\\!*?[]{}<>|&;()") {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

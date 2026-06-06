@@ -2,8 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"os/exec"
-	"runtime"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,6 +10,7 @@ import (
 	"github.com/linuskendall/cosmonaut/internal/editor"
 	"github.com/linuskendall/cosmonaut/internal/provider"
 	"github.com/linuskendall/cosmonaut/internal/sshconfig"
+	"github.com/linuskendall/cosmonaut/internal/terminal"
 )
 
 // detailFocus identifies which group of inputs has keyboard focus inside
@@ -247,7 +246,7 @@ func (m detailModel) openSSHShell(d *AppletData) tea.Cmd {
 			return flashMsg{text: "no SSH config yet — open in editor first", err: true}
 		}
 		useTmux := d.Config().WorkspaceSSHTmux(m.workspace.Provider, m.workspace.Name)
-		go openSSHInTerminalTUI(alias, m.guessWorkspacePath(), useTmux)
+		go terminal.OpenSSHInTerminal(alias, m.guessWorkspacePath(), useTmux)
 		return flashMsg{text: fmt.Sprintf("Opening shell to %s", alias)}
 	}
 }
@@ -479,37 +478,4 @@ func padRight(s string, w int) string {
 		return s
 	}
 	return s + strings.Repeat(" ", w-len(s))
-}
-
-// openSSHInTerminalTUI is the TUI's equivalent of the GUI helper: launches
-// an SSH session in the platform's terminal app so the user keeps their
-// applet open in one terminal while the shell opens in another.
-//
-// On macOS this uses osascript + Terminal.app; on Linux it falls through
-// a list of well-known emulators. When useTmux is set the remote command
-// is `tmux new -A -s cosmonaut` so the shell survives SSH drops.
-func openSSHInTerminalTUI(alias, workspacePath string, useTmux bool) {
-	remoteCmd := "exec $SHELL -l"
-	if useTmux {
-		remoteCmd = "tmux new -A -s cosmonaut"
-	}
-	cdPrefix := ""
-	if workspacePath != "" {
-		cdPrefix = fmt.Sprintf("cd %s && ", workspacePath)
-	}
-	sshCmd := fmt.Sprintf("ssh -t %s '%s%s'", alias, cdPrefix, remoteCmd)
-	if runtime.GOOS == "darwin" {
-		script := fmt.Sprintf(`tell application "Terminal"
-activate
-do script "%s"
-end tell`, sshCmd)
-		_ = exec.Command("osascript", "-e", script).Run()
-		return
-	}
-	for _, term := range []string{"ghostty", "alacritty", "kitty", "gnome-terminal", "xterm"} {
-		if _, err := exec.LookPath(term); err == nil {
-			_ = exec.Command(term, "-e", "sh", "-c", sshCmd).Run()
-			return
-		}
-	}
 }
