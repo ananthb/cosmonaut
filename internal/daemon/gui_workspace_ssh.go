@@ -7,8 +7,43 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
 
+	"github.com/linuskendall/cosmonaut/internal/provider"
 	"github.com/linuskendall/cosmonaut/internal/sshconfig"
 )
+
+// workspaceSSHControls captures which SSH option toggles a workspace's
+// detail view should render. The ControlMaster toggle is per-workspace
+// only when the on-disk conf is per-workspace — Coder workspaces all
+// share ~/.ssh/cosmonaut/coder.conf, so toggling ControlMaster there
+// would be last-writer-wins across sibling workspaces.
+type workspaceSSHControls struct {
+	ShowControlMaster bool
+	ShowTmux          bool
+	// SharedConfNote is a non-empty user-facing explanation when the
+	// ControlMaster toggle is hidden because the provider's SSH conf is
+	// shared across workspaces.
+	SharedConfNote string
+}
+
+// workspaceSSHControlsFor returns the set of SSH option controls that
+// should be rendered for a workspace from the given provider. Coder
+// hides ControlMaster (shared coder.conf) but keeps tmux (per-invocation
+// only); GitHub gets both.
+func workspaceSSHControlsFor(providerName string) workspaceSSHControls {
+	switch providerName {
+	case provider.NameCoder:
+		return workspaceSSHControls{
+			ShowControlMaster: false,
+			ShowTmux:          true,
+			SharedConfNote:    "Coder workspaces share `~/.ssh/cosmonaut/coder.conf` — ControlMaster is managed globally and can't be toggled per workspace.",
+		}
+	default:
+		return workspaceSSHControls{
+			ShowControlMaster: true,
+			ShowTmux:          true,
+		}
+	}
+}
 
 // buildWorkspaceSSHSection renders the per-workspace SSH option toggles
 // (ControlMaster persistent connection, tmux session wrapping) for the
@@ -19,6 +54,10 @@ import (
 // cs-B. Defaults match the package-wide defaults: ControlMaster on, tmux
 // off.
 //
+// For providers whose on-disk SSH conf is shared across workspaces (Coder),
+// the ControlMaster toggle is omitted in favour of an explanatory note —
+// see workspaceSSHControlsFor.
+//
 // refresh is invoked after a toggle changes so the caller can re-render the
 // detail panel (e.g. so ControlMaster info reflects in any sub-sections).
 // rebuildTrayMenu is also called so the tray reflects the new state on the
@@ -27,40 +66,45 @@ func (uw *unifiedWindow) buildWorkspaceSSHSection(providerName, workspaceName st
 	title := caption("SSH OPTIONS")
 
 	cfg := uw.daemon.Cfg
+	controls := workspaceSSHControlsFor(providerName)
 
-	cmCheck := widget.NewCheck("Persistent SSH (ControlMaster)", func(on bool) {
-		v := on
-		cfg.SetWorkspaceSSHControlMaster(providerName, workspaceName, &v)
-		uw.daemon.persistConfig()
-		// Rewrite this workspace's conf so the new managed-extras block
-		// takes effect immediately — otherwise the next SSH wouldn't pick
-		// up the change until the workspace is re-prepared.
-		uw.daemon.applyWorkspaceSSHOptions(providerName, workspaceName)
-		if refresh != nil {
-			refresh()
-		}
-	})
-	cmCheck.SetChecked(cfg.WorkspaceSSHControlMaster(providerName, workspaceName))
-	cmHint := mutedHint("Multiplex extra sessions over one TCP connection — instant reconnects.")
+	items := []fyne.CanvasObject{title}
 
-	tmuxCheck := widget.NewCheck("Wrap shell in tmux", func(on bool) {
-		v := on
-		cfg.SetWorkspaceSSHTmux(providerName, workspaceName, &v)
-		uw.daemon.persistConfig()
-		if refresh != nil {
-			refresh()
-		}
-	})
-	tmuxCheck.SetChecked(cfg.WorkspaceSSHTmux(providerName, workspaceName))
-	tmuxHint := mutedHint("The SSH button (and `cosmonaut shell`) attach to a persistent tmux session that survives disconnects.")
+	if controls.ShowControlMaster {
+		cmCheck := widget.NewCheck("Persistent SSH (ControlMaster)", func(on bool) {
+			v := on
+			cfg.SetWorkspaceSSHControlMaster(providerName, workspaceName, &v)
+			uw.daemon.persistConfig()
+			// Rewrite this workspace's conf so the new managed-extras block
+			// takes effect immediately — otherwise the next SSH wouldn't pick
+			// up the change until the workspace is re-prepared.
+			uw.daemon.applyWorkspaceSSHOptions(providerName, workspaceName)
+			if refresh != nil {
+				refresh()
+			}
+		})
+		cmCheck.SetChecked(cfg.WorkspaceSSHControlMaster(providerName, workspaceName))
+		cmHint := mutedHint("Multiplex extra sessions over one TCP connection — instant reconnects.")
+		items = append(items, cmCheck, container.NewPadded(cmHint))
+	} else if controls.SharedConfNote != "" {
+		items = append(items, container.NewPadded(mutedHint(controls.SharedConfNote)))
+	}
 
-	return container.NewVBox(
-		title,
-		cmCheck,
-		container.NewPadded(cmHint),
-		tmuxCheck,
-		container.NewPadded(tmuxHint),
-	)
+	if controls.ShowTmux {
+		tmuxCheck := widget.NewCheck("Wrap shell in tmux", func(on bool) {
+			v := on
+			cfg.SetWorkspaceSSHTmux(providerName, workspaceName, &v)
+			uw.daemon.persistConfig()
+			if refresh != nil {
+				refresh()
+			}
+		})
+		tmuxCheck.SetChecked(cfg.WorkspaceSSHTmux(providerName, workspaceName))
+		tmuxHint := mutedHint("The SSH button (and `cosmonaut shell`) attach to a persistent tmux session that survives disconnects.")
+		items = append(items, tmuxCheck, container.NewPadded(tmuxHint))
+	}
+
+	return container.NewVBox(items...)
 }
 
 // mutedHint returns a wrapped label styled as secondary help text.

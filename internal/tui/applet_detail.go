@@ -32,10 +32,60 @@ type detailModel struct {
 
 	focus         detailFocus
 	actionsCursor int // 0=Open, 1=SSH, 2=Delete
-	optionsCursor int // 0=ControlMaster, 1=tmux
+	optionsCursor int // index into the per-provider sshOptionRow list
 	portsCursor   int // index into displayed ports
 
 	confirmDelete bool
+}
+
+// sshOptionKind identifies one of the SSH option toggles. Used so the
+// detail view can render a provider-appropriate subset (Coder hides
+// ControlMaster because coder.conf is shared across workspaces).
+type sshOptionKind int
+
+const (
+	sshOptionControlMaster sshOptionKind = iota
+	sshOptionTmux
+)
+
+type sshOptionRow struct {
+	kind  sshOptionKind
+	label string
+	hint  string
+}
+
+// sshOptionRowsFor returns the SSH option toggles that should be shown
+// for a workspace from the given provider. Coder hides ControlMaster
+// because all Coder workspaces share ~/.ssh/cosmonaut/coder.conf, so
+// toggling it per workspace is incoherent (last writer wins). Tmux is a
+// per-invocation wrapper around the SSH command and is safe everywhere.
+func sshOptionRowsFor(providerName string) []sshOptionRow {
+	tmux := sshOptionRow{
+		kind:  sshOptionTmux,
+		label: "Wrap shell in tmux",
+		hint:  "SSH button and `cosmonaut shell` attach to a persistent tmux session.",
+	}
+	if providerName == provider.NameCoder {
+		return []sshOptionRow{tmux}
+	}
+	return []sshOptionRow{
+		{
+			kind:  sshOptionControlMaster,
+			label: "Persistent SSH (ControlMaster)",
+			hint:  "Multiplex extra sessions over one TCP connection — instant reconnects.",
+		},
+		tmux,
+	}
+}
+
+// sshOptionsSharedConfNote returns a non-empty explanation when the
+// provider's on-disk SSH conf is shared across workspaces and the
+// ControlMaster toggle is therefore hidden.
+func sshOptionsSharedConfNote(providerName string) string {
+	if providerName == provider.NameCoder {
+		return "Coder workspaces share ~/.ssh/cosmonaut/coder.conf — ControlMaster is managed globally and can't be toggled per workspace."
+	}
+	return ""
 }
 
 func newDetailModel(_ *AppletData, ws provider.Workspace) detailModel {
@@ -122,7 +172,11 @@ func (m *detailModel) moveCursor(delta int, d *AppletData) {
 	case focusActions:
 		m.actionsCursor = wrapDetail(m.actionsCursor+delta, 3)
 	case focusOptions:
-		m.optionsCursor = wrapDetail(m.optionsCursor+delta, 2)
+		n := len(sshOptionRowsFor(m.workspace.Provider))
+		if n == 0 {
+			return
+		}
+		m.optionsCursor = wrapDetail(m.optionsCursor+delta, n)
 	case focusPorts:
 		n := m.visiblePortCount(d)
 		if n == 0 {
@@ -156,8 +210,12 @@ func (m detailModel) activate(d *AppletData) (detailModel, tea.Cmd) {
 		}
 	case focusOptions:
 		cfg := d.Config()
-		switch m.optionsCursor {
-		case 0:
+		rows := sshOptionRowsFor(m.workspace.Provider)
+		if m.optionsCursor < 0 || m.optionsCursor >= len(rows) {
+			return m, nil
+		}
+		switch rows[m.optionsCursor].kind {
+		case sshOptionControlMaster:
 			cur := cfg.WorkspaceSSHControlMaster(m.workspace.Provider, m.workspace.Name)
 			next := !cur
 			cfg.SetWorkspaceSSHControlMaster(m.workspace.Provider, m.workspace.Name, &next)
@@ -168,7 +226,7 @@ func (m detailModel) activate(d *AppletData) (detailModel, tea.Cmd) {
 			// without waiting for the next PrepareSSH call.
 			m.applySSHOptionsAsync(d)
 			return m, emitFlash(fmt.Sprintf("ControlMaster %s", onOff(next)), false)
-		case 1:
+		case sshOptionTmux:
 			cur := cfg.WorkspaceSSHTmux(m.workspace.Provider, m.workspace.Name)
 			next := !cur
 			cfg.SetWorkspaceSSHTmux(m.workspace.Provider, m.workspace.Name, &next)
@@ -376,25 +434,26 @@ func (m detailModel) renderOptionsGroup(d *AppletData) string {
 		header = selectedStyle.Render("SSH OPTIONS")
 	}
 	cfg := d.Config()
-	cm := cfg.WorkspaceSSHControlMaster(m.workspace.Provider, m.workspace.Name)
-	tx := cfg.WorkspaceSSHTmux(m.workspace.Provider, m.workspace.Name)
-	rows := []struct {
-		label string
-		state bool
-		hint  string
-	}{
-		{"Persistent SSH (ControlMaster)", cm, "Multiplex extra sessions over one TCP connection — instant reconnects."},
-		{"Wrap shell in tmux", tx, "SSH button and `cosmonaut shell` attach to a persistent tmux session."},
-	}
+	rows := sshOptionRowsFor(m.workspace.Provider)
 	var lines []string
 	lines = append(lines, header)
+	if note := sshOptionsSharedConfNote(m.workspace.Provider); note != "" {
+		lines = append(lines, "  "+dimStyle.Render(note))
+	}
 	for i, r := range rows {
 		cursor := "  "
 		if m.focus == focusOptions && i == m.optionsCursor {
 			cursor = cursorStyle.Render("> ")
 		}
+		var state bool
+		switch r.kind {
+		case sshOptionControlMaster:
+			state = cfg.WorkspaceSSHControlMaster(m.workspace.Provider, m.workspace.Name)
+		case sshOptionTmux:
+			state = cfg.WorkspaceSSHTmux(m.workspace.Provider, m.workspace.Name)
+		}
 		box := "[ ]"
-		if r.state {
+		if state {
 			box = stateOK.Render("[x]")
 		}
 		line := fmt.Sprintf("%s%s %s", cursor, box, r.label)
