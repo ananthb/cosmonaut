@@ -213,6 +213,23 @@
             platforms = [ "x86_64-linux" "aarch64-darwin" ];
           };
         };
+        # cosmonautLint runs the gofumpt + golangci-lint gate. Exposed
+        # as `apps.lint` so the pre-commit hook and CI both go through
+        # `nix run .#lint`.
+        cosmonautLint = pkgs.writeShellApplication {
+          name = "cosmonaut-lint";
+          runtimeInputs = [ pkgs.go pkgs.gofumpt pkgs.golangci-lint ];
+          text = ''
+            unformatted="$(gofumpt -l .)"
+            if [ -n "$unformatted" ]; then
+              echo "gofumpt found unformatted files:" >&2
+              echo "$unformatted" >&2
+              echo "Run \`gofumpt -w .\` to fix." >&2
+              exit 1
+            fi
+            golangci-lint run ./...
+          '';
+        };
       in
       {
         packages = {
@@ -241,6 +258,11 @@
             pname = "cosmonaut";
             name = "cosmonaut-${if system == "x86_64-linux" then "x86_64" else "aarch64"}.AppImage";
           };
+        };
+
+        apps.lint = {
+          type = "app";
+          program = "${cosmonautLint}/bin/cosmonaut-lint";
         };
 
         devShells.default = pkgs.mkShell {
@@ -278,6 +300,23 @@
             # Run tests as: `xvfb-run -a go test ./...`
             pkgs.xvfb-run
           ];
+
+          # Install a pre-commit hook that runs the lint app. Idempotent
+          # — only overwrites the cosmonaut-managed marker, so a user's
+          # custom hook is left alone.
+          shellHook = ''
+            hook=".git/hooks/pre-commit"
+            marker="# cosmonaut-managed"
+            if [ -d .git ] && { [ ! -f "$hook" ] || grep -q "$marker" "$hook"; }; then
+              mkdir -p .git/hooks
+              cat > "$hook" <<EOF
+            #!/usr/bin/env bash
+            $marker
+            exec nix run .#lint
+            EOF
+              chmod +x "$hook"
+            fi
+          '';
         };
       }
     );

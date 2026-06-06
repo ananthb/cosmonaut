@@ -19,6 +19,9 @@ jobs:
           restore-prefixes-first-match: nix-${{ runner.os }}-
           gc-max-store-size-linux: 5G
 
+      - name: Lint
+        run: nix run .#lint
+
       - name: Build
         run: nix build
 
