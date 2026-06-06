@@ -1,9 +1,12 @@
 package main
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/tui"
@@ -20,6 +23,14 @@ func tuiCmd(configPath *string) *cobra.Command {
 		Long:         `Open the persistent terminal applet: workspace list, per-workspace detail (including the SSH option toggles), and settings, all keyboard-driven.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The applet uses Bubbletea's alt-screen mode, which writes
+			// terminal control sequences to stdout and reads keys from
+			// stdin. Both ends must be a TTY or the user gets garbage
+			// (alt-screen escape codes in piped output) and an unusable
+			// session. Fail loudly instead of guessing.
+			if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+				return fmt.Errorf("cosmonaut tui requires a terminal on both stdin and stdout")
+			}
 			absPath, err := filepath.Abs(*configPath)
 			if err != nil {
 				return err
