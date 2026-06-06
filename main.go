@@ -73,6 +73,7 @@ func rootCmd() *cobra.Command {
 With a target name, settings come from the config file. Without one, the
 persistent terminal applet opens (same as ` + "`cosmonaut tui`" + `). See the
 ` + "`applet`" + ` subcommand for the tray app, ` + "`shell`" + ` for a remote SSH shell,
+` + "`resolve`" + ` for a JSON dump of a workspace's SSH alias (no editor launch),
 and ` + "`doctor`" + ` for environment checks.`,
 		Args:              cobra.MaximumNArgs(1),
 		SilenceUsage:      true,
@@ -103,6 +104,7 @@ and ` + "`doctor`" + ` for environment checks.`,
 
 	cmd.AddCommand(appletCmd(&configPath))
 	cmd.AddCommand(doctorCmd())
+	cmd.AddCommand(resolveCmd(&configPath))
 	cmd.AddCommand(shellCmd(&configPath))
 	cmd.AddCommand(tuiCmd(&configPath))
 
