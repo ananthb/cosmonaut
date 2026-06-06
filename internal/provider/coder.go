@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/sshconfig"
@@ -184,7 +185,10 @@ func (m *CoderManager) DeleteWorkspace(name string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), coderDeleteTimeout)
 	defer cancel()
-	if _, err := m.runCtx(ctx, "delete", "--yes", name); err != nil {
+	// Pass `--` before the workspace name so a name that happens to begin with
+	// `--` is treated as a positional argument rather than parsed as a flag by
+	// the coder CLI's cobra-style parser.
+	if _, err := m.runCtx(ctx, "delete", "--yes", "--", name); err != nil {
 		return err
 	}
 	return nil
@@ -229,11 +233,35 @@ func (m *CoderManager) run(args ...string) (string, error) {
 
 func (m *CoderManager) runCtx(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "coder", args...)
+	// WaitDelay caps how long Wait blocks after the process is killed
+	// while it drains the stderr/stdout pipes into our buffers. Without
+	// this, exec.CommandContext's default Cancel callback can race the
+	// runtime's I/O goroutines, returning before the buffers are
+	// populated — breaking the "include stderr in timeout error"
+	// guarantee.
+	cmd.WaitDelay = 500 * time.Millisecond
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
+			tail := strings.TrimSpace(stderr.String())
+			if len(tail) > 200 {
+				// Slice the last 200 bytes, then advance to a UTF-8 rune
+				// boundary so we never emit a half-rune (which would render as
+				// a replacement character) in the error message.
+				tail = tail[len(tail)-200:]
+				for i := 0; i < len(tail) && i < 4; i++ {
+					if utf8.RuneStart(tail[i]) {
+						tail = tail[i:]
+						break
+					}
+				}
+				tail = "..." + tail
+			}
+			if tail != "" {
+				return "", fmt.Errorf("coder %s timed out: %s", strings.Join(args, " "), tail)
+			}
 			return "", fmt.Errorf("coder %s timed out", strings.Join(args, " "))
 		}
 		detail := strings.TrimSpace(stderr.String())
