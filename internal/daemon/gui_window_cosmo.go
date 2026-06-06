@@ -379,8 +379,6 @@ func (uw *unifiedWindow) showCosmoCodespaceDetail(csName, repo string) {
 	}
 
 	openBtn := primaryButton("Open", func() {
-		origEditor := uw.daemon.Cfg.Editor
-		uw.daemon.Cfg.Editor = selectedEditor
 		workspace := provider.Workspace{
 			Provider:    provider.NameGitHub,
 			Name:        cs.Name,
@@ -397,8 +395,9 @@ func (uw *unifiedWindow) showCosmoCodespaceDetail(csName, repo string) {
 				workspace.Branch = cs.GitStatus.Branch
 			}
 		}
-		uw.daemon.runLaunchFlow(uw.win, target, resolvedName, &workspace)
-		uw.daemon.Cfg.Editor = origEditor
+		uw.daemon.Cfg.WithEditor(selectedEditor, func() {
+			uw.daemon.runLaunchFlow(uw.win, target, resolvedName, &workspace)
+		})
 	})
 	sshBtn := widget.NewButton("SSH", func() {
 		go func() {
@@ -745,11 +744,10 @@ func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
 	}
 
 	openBtn := primaryButton("Open", func() {
-		origEditor := uw.daemon.Cfg.Editor
-		uw.daemon.Cfg.Editor = selectedEditor
 		workspace := ws
-		uw.daemon.runLaunchFlow(uw.win, target, resolvedName, &workspace)
-		uw.daemon.Cfg.Editor = origEditor
+		uw.daemon.Cfg.WithEditor(selectedEditor, func() {
+			uw.daemon.runLaunchFlow(uw.win, target, resolvedName, &workspace)
+		})
 	})
 	sshBtn := widget.NewButton("SSH", func() {
 		go func() {
