@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -18,6 +19,14 @@ import (
 // app foregrounded) cover the responsive case; this just keeps state
 // from going indefinitely stale when the user leaves the menu alone.
 const pollerBackstopInterval = 15 * time.Minute
+
+// pollListTimeout caps how long a single provider list call may take
+// during a poll. If `gh` or `coder` hangs the timeout fires, the list
+// call returns an error, and the in-flight poll slot is released so
+// later forcePollAsync callers (which `cond.Wait` on the slot) don't
+// leak goroutines. Declared as a var (not const) so tests can shorten
+// it without waiting the full 30s.
+var pollListTimeout = 30 * time.Second
 
 func (d *Daemon) startPoller() {
 	ticker := time.NewTicker(pollerBackstopInterval)
@@ -37,6 +46,12 @@ func (d *Daemon) startPoller() {
 // debounced refresh. Wakes on macOS (NSMenu menuWillOpen:) and Linux
 // (DBusMenu "opened"); does nothing on platforms where the underlying
 // systray library doesn't drive the channel.
+//
+// TODO(systray): fyne.io/systray does not currently expose a tray-closed
+// channel. When/if one is added, hook it here to reset d.trayOpenedAt
+// on close and immediately flush any pending rebuild. Until then, the
+// interaction-window timeout in rebuildTrayMenu's gate is the only
+// signal we have that the user has finished navigating the menu.
 func (d *Daemon) watchTrayOpened() {
 	for {
 		select {
@@ -49,18 +64,26 @@ func (d *Daemon) watchTrayOpened() {
 }
 
 // onTrayOpened records the open timestamp (used as the start of the
-// interaction window during which rebuildTrayMenu defers), flushes any
-// rebuild that was deferred from a previous interaction window so the
-// user sees fresh data immediately, and kicks off a fresh poll.
+// interaction window during which rebuildTrayMenu defers) and kicks
+// off a fresh poll. It does NOT flush any pendingRebuild here: applying
+// the menu as the tray opens still dismisses the user's first click on
+// some platforms. Instead, rebuildTrayMenu's timer fires after the
+// interaction window elapses, by which point the user is no longer
+// expected to be navigating the freshly opened menu.
 func (d *Daemon) onTrayOpened() {
 	d.mu.Lock()
-	pending := d.pendingRebuild
-	d.pendingRebuild = false
-	d.trayOpenedAt = time.Now()
-	d.mu.Unlock()
-	if pending {
-		d.applyTrayMenu()
+	d.trayOpenedAt = d.now()
+	// If a rebuild is pending, make sure the retry timer is armed for
+	// at least one full interaction window from now — otherwise an
+	// earlier timer could fire mid-interaction.
+	if d.pendingRebuild {
+		if d.rebuildTimer != nil {
+			d.rebuildTimer.Stop()
+			d.rebuildTimer = nil
+		}
+		d.armRebuildTimerLocked(trayInteractionWindow)
 	}
+	d.mu.Unlock()
 	d.maybePollAsync()
 }
 
@@ -140,8 +163,8 @@ func (d *Daemon) releasePoll() {
 // slot via tryAcquirePoll or acquirePoll.
 func (d *Daemon) runPoll() {
 	var codespaces []codespace.Codespace
-	ghWorkspaces := d.pollProvider(provider.NameGitHub, "gh", func() ([]provider.Workspace, error) {
-		cs, err := codespace.ListAllCodespaces(d.Runner)
+	ghWorkspaces := d.pollProvider(provider.NameGitHub, "gh", func(ctx context.Context) ([]provider.Workspace, error) {
+		cs, err := codespace.ListAllCodespacesCtx(ctx, d.Runner)
 		if err != nil {
 			return nil, err
 		}
@@ -151,8 +174,8 @@ func (d *Daemon) runPoll() {
 
 	var coderWorkspaces []provider.Workspace
 	if d.Cfg != nil && d.Cfg.IsCoderConfigured() {
-		coderWorkspaces = d.pollProvider(provider.NameCoder, "coder", func() ([]provider.Workspace, error) {
-			return provider.NewCoderManager(d.Cfg).ListAllWorkspaces()
+		coderWorkspaces = d.pollProvider(provider.NameCoder, "coder", func(ctx context.Context) ([]provider.Workspace, error) {
+			return provider.NewCoderManager(d.Cfg).ListAllWorkspacesCtx(ctx)
 		})
 	}
 
@@ -176,14 +199,21 @@ func (d *Daemon) runPoll() {
 // provider, records the resulting ProviderStatus, and propagates
 // listErr when the provider is the effective default. Returns the
 // listed workspaces, or nil on failure.
-func (d *Daemon) pollProvider(name, cli string, list func() ([]provider.Workspace, error)) []provider.Workspace {
+//
+// The list call is capped at pollListTimeout so that a hung `gh` or
+// `coder` process can't pin the in-flight poll slot indefinitely; on
+// timeout the context error surfaces as a regular list error and the
+// ProviderStatus banner explains.
+func (d *Daemon) pollProvider(name, cli string, list func(ctx context.Context) ([]provider.Workspace, error)) []provider.Workspace {
 	if err := provider.RequireCommand(cli); err != nil {
 		log.Printf("poll(%s): %v", name, err)
 		d.setProviderStatus(name, ProviderStatus{Available: false, Err: err})
 		d.updateEffectiveListErr(name, err)
 		return nil
 	}
-	workspaces, err := list()
+	ctx, cancel := context.WithTimeout(context.Background(), pollListTimeout)
+	defer cancel()
+	workspaces, err := list(ctx)
 	if err != nil {
 		log.Printf("poll(%s): %v", name, err)
 	}

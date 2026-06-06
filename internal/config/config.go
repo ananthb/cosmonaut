@@ -392,6 +392,9 @@ func (c *Config) IsCoderConfigured() bool {
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	// NOTE: cannot import provider package due to import cycle
+	// (provider imports config). Keep this literal in sync with
+	// provider.NameCoder.
 	if c.effectiveWorkspaceProviderLocked() == "coder" {
 		return true
 	}
@@ -431,6 +434,9 @@ func (c *Config) IsGitHubConfigured() bool {
 }
 
 func (t Target) ExplicitWorkspaceName(provider string) string {
+	// NOTE: cannot import provider package due to import cycle
+	// (provider imports config). Keep this literal in sync with
+	// provider.NameCoder.
 	if provider == "coder" {
 		if t.Coder != nil && t.Coder.WorkspaceName != "" {
 			return t.Coder.WorkspaceName

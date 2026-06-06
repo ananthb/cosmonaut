@@ -1,6 +1,7 @@
 package codespace
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -15,6 +16,10 @@ type fakeGHRunner struct {
 func (f *fakeGHRunner) Run(args []string) (string, error) {
 	f.args = append([]string(nil), args...)
 	return f.out, f.err
+}
+
+func (f *fakeGHRunner) RunCtx(_ context.Context, args []string) (string, error) {
+	return f.Run(args)
 }
 
 func (f *fakeGHRunner) RunMerged(args []string) (string, error) {

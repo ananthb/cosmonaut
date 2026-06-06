@@ -40,12 +40,21 @@ type Daemon struct {
 	providerStatus map[string]ProviderStatus
 	lastPollAt     time.Time
 	pollInFlight   bool
-	pollCond       *sync.Cond // signals when a poll slot frees; broadcast under mu
-	trayOpenedAt   time.Time  // last time the tray menu was opened; zero before first open
-	pendingRebuild bool       // a rebuild was deferred while the tray was in-use
+	pollCond       *sync.Cond  // signals when a poll slot frees; broadcast under mu
+	trayOpenedAt   time.Time   // last time the tray menu was opened; zero before first open
+	lastApplyAt    time.Time   // last time applyTrayMenu actually ran; zero before first apply
+	pendingRebuild bool        // a rebuild was deferred while the tray was in-use
+	rebuildTimer   *time.Timer // wakes up to retry a deferred rebuild after the gate window
 	stopCh         chan struct{}
 	sessions       *SessionTracker
 	forwards       *PortForwardManager
+
+	// nowFunc returns the current time. Overridable for tests so the
+	// tray rebuild gate can be exercised without sleeping in real time.
+	nowFunc func() time.Time
+	// applyTrayMenuFunc, when non-nil, replaces the real Fyne SetSystemTrayMenu
+	// call. Used by tests to observe apply events without a Fyne app.
+	applyTrayMenuFunc func()
 
 	dismissMu sync.Mutex
 	dismissed map[string]bool
@@ -109,9 +118,19 @@ func New(cfg *config.Config, configPath string) *Daemon {
 		stopCh:     make(chan struct{}),
 		sessions:   newSessionTracker(mode),
 		forwards:   newPortForwardManager(),
+		nowFunc:    time.Now,
 	}
 	d.pollCond = sync.NewCond(&d.mu)
 	return d
+}
+
+// now returns the current time via nowFunc when set, or time.Now otherwise.
+// Tests can swap nowFunc to drive the tray rebuild gate deterministically.
+func (d *Daemon) now() time.Time {
+	if d.nowFunc != nil {
+		return d.nowFunc()
+	}
+	return time.Now()
 }
 
 // Run starts all applet components. It blocks until Stop is called.

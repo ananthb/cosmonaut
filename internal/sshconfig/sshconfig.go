@@ -87,6 +87,9 @@ func (p SSHPaths) CodespaceConfigPath(codespaceName string) string {
 }
 
 func (p SSHPaths) WorkspaceConfigPath(provider, workspaceName string) string {
+	// NOTE: cannot import provider package due to import cycle
+	// (provider imports sshconfig). Keep these literals in sync with
+	// provider.NameCoder / provider.NameGitHub.
 	if provider == "coder" {
 		return filepath.Join(p.IncludeDir, coderConfigFile)
 	}
@@ -203,6 +206,9 @@ func ReadExistingAlias(includeDir, codespaceName string) (string, bool) {
 
 func ReadExistingWorkspaceAlias(paths SSHPaths, provider, workspaceName string) (string, bool) {
 	path := paths.WorkspaceConfigPath(provider, workspaceName)
+	// NOTE: cannot import provider package due to import cycle
+	// (provider imports sshconfig). Keep this literal in sync with
+	// provider.NameCoder.
 	if provider == "coder" {
 		if _, err := os.Stat(path); err != nil {
 			return "", false
