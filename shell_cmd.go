@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,8 +70,14 @@ func runShell(configPath, targetName, codespaceName string, tmuxOverride, contro
 	if err != nil {
 		return err
 	}
-	cfg, _ := config.LoadConfig(absConfigPath)
-	if cfg == nil {
+	cfg, err := config.LoadConfig(absConfigPath)
+	if err != nil {
+		// Missing config is fine — `cosmonaut shell <owner>/<repo>` works
+		// without one. Parse errors, on the other hand, are user-visible
+		// bugs and we'd rather fail loudly than silently use defaults.
+		if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
 		cfg = &config.Config{}
 	}
 
@@ -84,11 +92,10 @@ func runShell(configPath, targetName, codespaceName string, tmuxOverride, contro
 		return err
 	}
 
-	target, resolvedTargetName, err := resolveShellTarget(cfg, targetName, codespaceName, manager.Name())
+	target, err := resolveShellTarget(cfg, targetName, codespaceName, manager.Name())
 	if err != nil {
 		return err
 	}
-	_ = resolvedTargetName
 
 	var selected *provider.Workspace
 	switch {
@@ -143,32 +150,32 @@ func runShell(configPath, targetName, codespaceName string, tmuxOverride, contro
 
 // resolveShellTarget mirrors the root command's target resolution but skips
 // the interactive picker — `cosmonaut shell` is expected to be scripted.
-func resolveShellTarget(cfg *config.Config, targetName, codespaceName, providerName string) (config.Target, string, error) {
+func resolveShellTarget(cfg *config.Config, targetName, codespaceName, providerName string) (config.Target, error) {
 	if codespaceName != "" && targetName == "" {
-		return config.Target{}, codespaceName, nil
+		return config.Target{}, nil
 	}
 	if targetName == "" {
 		if cfg != nil && cfg.DefaultTarget != "" {
 			t, ok := cfg.Targets[cfg.DefaultTarget]
 			if !ok {
-				return config.Target{}, "", fmt.Errorf("default target %q not found", cfg.DefaultTarget)
+				return config.Target{}, fmt.Errorf("default target %q not found", cfg.DefaultTarget)
 			}
-			return t, cfg.DefaultTarget, nil
+			return t, nil
 		}
-		return config.Target{}, "", fmt.Errorf("no target was provided and config.defaultTarget is not set")
+		return config.Target{}, fmt.Errorf("no target was provided and config.defaultTarget is not set")
 	}
 	if strings.Contains(targetName, "/") {
-		t, name := targetForRepo(cfg, targetName, providerName)
-		return t, name, nil
+		t, _ := targetForRepo(cfg, targetName, providerName)
+		return t, nil
 	}
 	if cfg == nil {
-		return config.Target{}, "", fmt.Errorf("target %q specified but no config file found", targetName)
+		return config.Target{}, fmt.Errorf("target %q specified but no config file found", targetName)
 	}
 	t, ok := cfg.Targets[targetName]
 	if !ok {
-		return config.Target{}, "", fmt.Errorf("unknown target %q", targetName)
+		return config.Target{}, fmt.Errorf("unknown target %q", targetName)
 	}
-	return t, targetName, nil
+	return t, nil
 }
 
 // execSSHShell replaces the current process with `ssh -t <alias> '<cmd>'`.

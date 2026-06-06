@@ -9,9 +9,20 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 type Config struct {
+	// mu guards every field below. Reads take RLock, writes take Lock.
+	// The GUI/TUI mutate Config from goroutines other than the one that
+	// reads it during a launch or tray rebuild, so all access has to be
+	// serialized.
+	//
+	// Embedding sync.RWMutex on Config means Config must always be used
+	// via a pointer — copying it would copy the mutex (which `go vet`
+	// flags as a copylock violation).
+	mu sync.RWMutex
+
 	DefaultTarget     string            `json:"defaultTarget,omitempty"`
 	WorkspaceProvider string            `json:"workspaceProvider,omitempty"` // "github" (default) or "coder"
 	Editor            string            `json:"editor,omitempty"`            // any binary on PATH; "" / "zed" / "zeditor" use the built-in Zed integration
@@ -52,6 +63,8 @@ func (c *Config) WorkspaceSSHControlMaster(provider, name string) bool {
 	if c == nil {
 		return true
 	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if s, ok := c.WorkspaceSSH[WorkspaceSSHKey(provider, name)]; ok && s.ControlMaster != nil {
 		return *s.ControlMaster
 	}
@@ -64,6 +77,8 @@ func (c *Config) WorkspaceSSHTmux(provider, name string) bool {
 	if c == nil {
 		return false
 	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if s, ok := c.WorkspaceSSH[WorkspaceSSHKey(provider, name)]; ok && s.Tmux != nil {
 		return *s.Tmux
 	}
@@ -86,6 +101,8 @@ func (c *Config) setWorkspaceSSH(provider, name string, mut func(*WorkspaceSSHSe
 	if c == nil {
 		return
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	key := WorkspaceSSHKey(provider, name)
 	if c.WorkspaceSSH == nil {
 		c.WorkspaceSSH = map[string]WorkspaceSSHSettings{}
@@ -100,6 +117,137 @@ func (c *Config) setWorkspaceSSH(provider, name string, mut func(*WorkspaceSSHSe
 		return
 	}
 	c.WorkspaceSSH[key] = s
+}
+
+// GetEditor returns the configured editor name.
+func (c *Config) GetEditor() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Editor
+}
+
+// SetEditor persists the editor name. Callers should follow up with
+// SaveConfig to flush to disk.
+func (c *Config) SetEditor(editor string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Editor = editor
+}
+
+// WithEditor swaps in a temporary editor for the duration of fn (typically a
+// launch flow whose editor override should not leak to the persistent config)
+// and restores the prior value when fn returns. Holds the write lock for the
+// whole window so no concurrent reader observes a half-swapped state.
+func (c *Config) WithEditor(editor string, fn func()) {
+	if c == nil {
+		fn()
+		return
+	}
+	c.mu.Lock()
+	prev := c.Editor
+	c.Editor = editor
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.Editor = prev
+		c.mu.Unlock()
+	}()
+	fn()
+}
+
+// EnsureDaemon initialises Config.Daemon to a zero-value DaemonConfig if it's
+// nil, and returns a snapshot of the current daemon settings under the read
+// lock. The returned struct is a copy: mutating it does not affect the live
+// config — use the SetDaemon* helpers for that.
+func (c *Config) EnsureDaemon() DaemonConfig {
+	if c == nil {
+		return DaemonConfig{}
+	}
+	c.mu.Lock()
+	if c.Daemon == nil {
+		c.Daemon = &DaemonConfig{}
+	}
+	snap := *c.Daemon
+	c.mu.Unlock()
+	return snap
+}
+
+// SetDaemonHotkeyAction persists the daemon HotkeyAction field. Daemon is
+// auto-created if nil.
+func (c *Config) SetDaemonHotkeyAction(action string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Daemon == nil {
+		c.Daemon = &DaemonConfig{}
+	}
+	c.Daemon.HotkeyAction = action
+}
+
+// SetDaemonInhibitSleep persists the daemon InhibitSleep field. Daemon is
+// auto-created if nil.
+func (c *Config) SetDaemonInhibitSleep(mode string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Daemon == nil {
+		c.Daemon = &DaemonConfig{}
+	}
+	c.Daemon.InhibitSleep = mode
+}
+
+// Target returns a copy of the named target, or the zero value with ok=false
+// when no such target is configured.
+func (c *Config) Target(name string) (Target, bool) {
+	if c == nil {
+		return Target{}, false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	t, ok := c.Targets[name]
+	return t, ok
+}
+
+// SetTarget writes a target into the Targets map. The Targets map is
+// auto-created if nil.
+func (c *Config) SetTarget(name string, t Target) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Targets == nil {
+		c.Targets = map[string]Target{}
+	}
+	c.Targets[name] = t
+}
+
+// UpdateTarget performs a read-modify-write on the named target atomically.
+// The callback receives a pointer to the live target value; whatever it
+// stores is written back. If the target doesn't exist, a zero-value Target
+// is passed and stored on return. The Targets map is auto-created if nil.
+func (c *Config) UpdateTarget(name string, fn func(*Target)) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Targets == nil {
+		c.Targets = map[string]Target{}
+	}
+	t := c.Targets[name]
+	fn(&t)
+	c.Targets[name] = t
 }
 
 type ProviderConfigs struct {
@@ -170,6 +318,10 @@ func ParseJSONC(source string) ([]byte, error) {
 }
 
 // LoadConfig reads a JSONC config file and returns the parsed Config.
+//
+// LoadConfig returns a freshly-allocated *Config that no other goroutine has
+// a reference to yet, so it doesn't need to hold the mutex while populating
+// it.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -195,7 +347,14 @@ func LoadConfig(path string) (*Config, error) {
 
 // SaveConfig writes the config to the given path as formatted JSON
 // with 4-space indentation for easy hand-editing.
+//
+// Takes the write lock for the duration of the marshal so a concurrent
+// writer can't mutate the struct mid-serialization.
 func SaveConfig(path string, cfg *Config) error {
+	if cfg != nil {
+		cfg.mu.Lock()
+		defer cfg.mu.Unlock()
+	}
 	data, err := json.MarshalIndent(cfg, "", "    ")
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
@@ -205,6 +364,18 @@ func SaveConfig(path string, cfg *Config) error {
 }
 
 func (c *Config) EffectiveWorkspaceProvider() string {
+	if c == nil {
+		return "github"
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.effectiveWorkspaceProviderLocked()
+}
+
+// effectiveWorkspaceProviderLocked is the lock-free body of
+// EffectiveWorkspaceProvider, callable by other methods that already hold
+// c.mu (read or write).
+func (c *Config) effectiveWorkspaceProviderLocked() string {
 	if c == nil || c.WorkspaceProvider == "" {
 		return "github"
 	}
@@ -219,7 +390,9 @@ func (c *Config) IsCoderConfigured() bool {
 	if c == nil {
 		return false
 	}
-	if c.EffectiveWorkspaceProvider() == "coder" {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.effectiveWorkspaceProviderLocked() == "coder" {
 		return true
 	}
 	for _, t := range c.Targets {
@@ -244,7 +417,9 @@ func (c *Config) IsGitHubConfigured() bool {
 	if c == nil {
 		return true
 	}
-	if c.EffectiveWorkspaceProvider() == "github" {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.effectiveWorkspaceProviderLocked() == "github" {
 		return true
 	}
 	for _, t := range c.Targets {

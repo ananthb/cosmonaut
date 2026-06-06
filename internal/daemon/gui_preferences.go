@@ -41,16 +41,14 @@ func (d *Daemon) buildSettingsPanel(win fyne.Window) fyne.CanvasObject {
 
 	// Daemon settings.
 	if d.Cfg != nil {
-		if d.Cfg.Daemon == nil {
-			d.Cfg.Daemon = &config.DaemonConfig{}
-		}
+		d.Cfg.EnsureDaemon()
 		items = append(items, d.buildDaemonSection())
 		items = append(items, widget.NewSeparator())
 	}
 
 	// Default target settings.
 	if d.Cfg != nil && d.Cfg.DefaultTarget != "" {
-		if _, ok := d.Cfg.Targets[d.Cfg.DefaultTarget]; ok {
+		if _, ok := d.Cfg.Target(d.Cfg.DefaultTarget); ok {
 			items = append(items, d.buildTargetSection())
 			items = append(items, widget.NewSeparator())
 		}
@@ -290,23 +288,23 @@ func (d *Daemon) buildAuthSection(win fyne.Window) fyne.CanvasObject {
 func (d *Daemon) buildEditorSection() fyne.CanvasObject {
 	editorEntry := widget.NewEntry()
 	editorEntry.SetPlaceHolder("zed (default)")
-	editorEntry.SetText(d.Cfg.Editor)
+	editorEntry.SetText(d.Cfg.GetEditor())
 	editorEntry.OnSubmitted = func(val string) {
-		d.Cfg.Editor = val
+		d.Cfg.SetEditor(val)
 		d.persistConfig()
 	}
 	return widget.NewForm(widget.NewFormItem("Editor", editorEntry))
 }
 
 func (d *Daemon) buildDaemonSection() fyne.CanvasObject {
-	daemon := d.Cfg.Daemon
+	daemon := d.Cfg.EnsureDaemon()
 
 	currentAction := daemon.HotkeyAction
 	if currentAction == "" {
 		currentAction = "picker"
 	}
 	actionSelect := widget.NewSelect([]string{"picker", "previous", "default"}, func(val string) {
-		d.Cfg.Daemon.HotkeyAction = val
+		d.Cfg.SetDaemonHotkeyAction(val)
 		d.persistConfig()
 	})
 	actionSelect.Selected = currentAction
@@ -316,7 +314,7 @@ func (d *Daemon) buildDaemonSection() fyne.CanvasObject {
 		currentInhibit = "off"
 	}
 	inhibitSelect := widget.NewSelect([]string{"off", "sleep", "sleep+shutdown"}, func(val string) {
-		d.Cfg.Daemon.InhibitSleep = val
+		d.Cfg.SetDaemonInhibitSleep(val)
 		if d.sessions != nil {
 			d.sessions.SetMode(val)
 		}
@@ -332,7 +330,7 @@ func (d *Daemon) buildDaemonSection() fyne.CanvasObject {
 
 func (d *Daemon) buildTargetSection() fyne.CanvasObject {
 	targetName := d.Cfg.DefaultTarget
-	t := d.Cfg.Targets[targetName]
+	t, _ := d.Cfg.Target(targetName)
 
 	heading := widget.NewLabel(fmt.Sprintf("Target: %s", targetName))
 	heading.TextStyle = fyne.TextStyle{Bold: true}
@@ -342,13 +340,13 @@ func (d *Daemon) buildTargetSection() fyne.CanvasObject {
 		currentAutoStop = "off"
 	}
 	autoStopSelect := widget.NewSelect([]string{"off", "15m", "30m", "1h"}, func(val string) {
-		t := d.Cfg.Targets[targetName]
-		if val == "off" {
-			t.AutoStop = ""
-		} else {
-			t.AutoStop = val
-		}
-		d.Cfg.Targets[targetName] = t
+		d.Cfg.UpdateTarget(targetName, func(t *config.Target) {
+			if val == "off" {
+				t.AutoStop = ""
+			} else {
+				t.AutoStop = val
+			}
+		})
 		d.persistConfig()
 	})
 	autoStopSelect.Selected = currentAutoStop
@@ -358,13 +356,13 @@ func (d *Daemon) buildTargetSection() fyne.CanvasObject {
 		currentPreWarm = "off"
 	}
 	preWarmSelect := widget.NewSelect([]string{"off", "08:00", "09:00", "10:00"}, func(val string) {
-		t := d.Cfg.Targets[targetName]
-		if val == "off" {
-			t.PreWarm = ""
-		} else {
-			t.PreWarm = val
-		}
-		d.Cfg.Targets[targetName] = t
+		d.Cfg.UpdateTarget(targetName, func(t *config.Target) {
+			if val == "off" {
+				t.PreWarm = ""
+			} else {
+				t.PreWarm = val
+			}
+		})
 		d.persistConfig()
 	})
 	preWarmSelect.Selected = currentPreWarm
