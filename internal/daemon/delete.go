@@ -17,17 +17,20 @@ import (
 // — CLI availability and last list error — already encode the same
 // signals the destroy call needs, so we don't re-check here.
 //
-// If we haven't polled yet (CheckedAt is zero) we treat the provider
-// as deletable; the actual call will surface a real error if it isn't.
-// Otherwise the button is disabled when the CLI is missing or the last
-// list call failed, since both predict the delete would fail too.
+// Before the first poll lands (CheckedAt is zero) we treat the
+// provider as not yet deletable: enabling Delete optimistically would
+// let the user click it during cold start and then have the button
+// disable seconds later when the first poll reveals a missing CLI or
+// auth failure. Otherwise the button is disabled when the CLI is
+// missing or the last list call failed, since both predict the delete
+// would fail too.
 func (d *Daemon) canDeleteWorkspace(providerName string) bool {
 	if providerName != provider.NameGitHub && providerName != provider.NameCoder {
 		return false
 	}
 	status := d.StatusFor(providerName)
 	if status.CheckedAt.IsZero() {
-		return true
+		return false
 	}
 	return status.Available && status.Err == nil
 }
@@ -41,6 +44,9 @@ func (d *Daemon) deleteDisabledReason(providerName string) string {
 		return ""
 	}
 	status := d.StatusFor(providerName)
+	if status.CheckedAt.IsZero() {
+		return "checking..."
+	}
 	if !status.Available {
 		switch providerName {
 		case provider.NameCoder:
