@@ -105,6 +105,7 @@ and ` + "`doctor`" + ` for environment checks.`,
 
 	cmd.AddCommand(appletCmd(&configPath))
 	cmd.AddCommand(doctorCmd())
+	cmd.AddCommand(launchCmd(&configPath))
 	cmd.AddCommand(resolveCmd(&configPath))
 	cmd.AddCommand(shellCmd(&configPath))
 
