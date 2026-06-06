@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"log"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/linuskendall/cosmonaut/internal/codespace"
 	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/doctor"
+	"github.com/linuskendall/cosmonaut/internal/terminal"
 )
 
 // settingsSection identifies which group of rows has focus.
@@ -260,7 +260,7 @@ func (m settingsModel) activate(d *AppletData) (settingsModel, tea.Cmd) {
 		if c.HasTerminalFix() {
 			cmd := c.FixCommand()
 			return m, func() tea.Msg {
-				openCommandInTerminalTUI(cmd + `; echo; echo "Press enter to close"; read _`)
+				terminal.OpenCommandInTerminal(cmd + `; echo; echo "Press enter to close"; read _`)
 				return flashMsg{text: "Fix command opened in terminal"}
 			}
 		}
@@ -288,7 +288,7 @@ func (m settingsModel) toggleAuth(d *AppletData) (settingsModel, tea.Cmd) {
 		}
 	}
 	return m, func() tea.Msg {
-		openCommandInTerminalTUI(`gh auth login --web --hostname github.com; echo; echo "Press enter to close"; read _`)
+		terminal.OpenCommandInTerminal(`gh auth login --web --hostname github.com; echo; echo "Press enter to close"; read _`)
 		return flashMsg{text: "Login flow opened in terminal"}
 	}
 }
@@ -440,30 +440,6 @@ func (m settingsModel) renderActions(d *AppletData) string {
 		label = selectedStyle.Render(label)
 	}
 	return fmt.Sprintf("%s\n%s%s  %s", header, cursor, label, dimStyle.Render(d.ConfigPath()))
-}
-
-// openCommandInTerminalTUI is settings-page equivalent of the GUI's
-// openCommandInTerminal: launches the platform's default terminal app with
-// the supplied shell command (used for "Fix in terminal" and "Log in...").
-func openCommandInTerminalTUI(shellCmd string) {
-	if runtime.GOOS == "darwin" {
-		script := fmt.Sprintf(`tell application "Terminal"
-activate
-do script "%s"
-end tell`, shellCmd)
-		if err := exec.Command("osascript", "-e", script).Run(); err != nil {
-			log.Printf("terminal: osascript: %v", err)
-		}
-		return
-	}
-	for _, term := range []string{"ghostty", "alacritty", "kitty", "gnome-terminal", "xterm"} {
-		if _, err := exec.LookPath(term); err == nil {
-			if err := exec.Command(term, "-e", "sh", "-c", shellCmd).Run(); err != nil {
-				log.Printf("terminal: %s: %v", term, err)
-			}
-			return
-		}
-	}
 }
 
 // openFile asks the OS to open path with its default handler. Used by the

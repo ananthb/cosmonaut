@@ -20,8 +20,6 @@ import (
 	"image/color"
 	"log"
 	"net/url"
-	"os/exec"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +36,7 @@ import (
 	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/doctor"
 	"github.com/linuskendall/cosmonaut/internal/provider"
+	"github.com/linuskendall/cosmonaut/internal/terminal"
 )
 
 const (
@@ -169,7 +168,7 @@ func (uw *unifiedWindow) fixButton(c doctor.Check) *widget.Button {
 	case c.HasTerminalFix():
 		return primaryButton("Fix in terminal", func() {
 			cmd := c.FixCommand() + `; echo; echo "Press enter to close"; read _`
-			go openCommandInTerminal(cmd)
+			go terminal.OpenCommandInTerminal(cmd)
 		})
 	}
 	return nil
@@ -405,7 +404,7 @@ func (uw *unifiedWindow) showCosmoCodespaceDetail(csName, repo string) {
 		go func() {
 			sshAlias := fmt.Sprintf("cs.%s.github.dev", cs.Name)
 			useTmux := uw.daemon.Cfg.WorkspaceSSHTmux(provider.NameGitHub, cs.Name)
-			openSSHInTerminal(sshAlias, target.WorkspacePath, useTmux)
+			terminal.OpenSSHInTerminal(sshAlias, target.WorkspacePath, useTmux)
 			if uw.daemon.sessions != nil {
 				uw.daemon.sessions.TrackSession(sshAlias)
 			}
@@ -757,7 +756,7 @@ func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
 			sshAlias := fmt.Sprintf("%s.coder", ws.Name)
 			useTmux := uw.daemon.Cfg.WorkspaceSSHTmux(provider.NameCoder, ws.Name)
 			workspacePath := guessWorkspacePath(target, &ws)
-			openSSHInTerminal(sshAlias, workspacePath, useTmux)
+			terminal.OpenSSHInTerminal(sshAlias, workspacePath, useTmux)
 			if uw.daemon.sessions != nil {
 				uw.daemon.sessions.TrackSession(sshAlias)
 			}
@@ -1331,45 +1330,4 @@ func githubURL(pathSegments ...string) *url.URL {
 		Path:   strings.Join(pathSegments, "/"),
 	}
 	return &u
-}
-
-// openSSHInTerminal opens an SSH session to a codespace in the default
-// terminal. When useTmux is true the remote command is `tmux new -A -s
-// cosmonaut` so the shell session survives an SSH drop and can be
-// re-attached by re-running the SSH button.
-func openSSHInTerminal(sshAlias, workspacePath string, useTmux bool) {
-	remoteCmd := "exec $SHELL -l"
-	if useTmux {
-		remoteCmd = "tmux new -A -s cosmonaut"
-	}
-	cdPrefix := ""
-	if workspacePath != "" {
-		cdPrefix = fmt.Sprintf("cd %s && ", workspacePath)
-	}
-	sshCmd := fmt.Sprintf("ssh -t %s '%s%s'", sshAlias, cdPrefix, remoteCmd)
-	openCommandInTerminal(sshCmd)
-}
-
-// openCommandInTerminal launches the platform's default terminal emulator
-// running the given shell command. Used for any flow that needs a real TTY
-// (gh device-flow auth, SSH).
-func openCommandInTerminal(shellCmd string) {
-	if runtime.GOOS == "darwin" {
-		script := fmt.Sprintf(`tell application "Terminal"
-activate
-do script "%s"
-end tell`, shellCmd)
-		if err := exec.Command("osascript", "-e", script).Run(); err != nil {
-			log.Printf("terminal: osascript: %v", err)
-		}
-		return
-	}
-	for _, term := range []string{"ghostty", "alacritty", "kitty", "gnome-terminal", "xterm"} {
-		if _, err := exec.LookPath(term); err == nil {
-			if err := exec.Command(term, "-e", "sh", "-c", shellCmd).Run(); err != nil {
-				log.Printf("terminal: %s: %v", term, err)
-			}
-			return
-		}
-	}
 }

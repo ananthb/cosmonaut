@@ -15,6 +15,7 @@ import (
 	"github.com/linuskendall/cosmonaut/internal/codespace"
 	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/doctor"
+	"github.com/linuskendall/cosmonaut/internal/terminal"
 )
 
 // buildSettingsPanel builds the settings content panel for the unified window.
@@ -190,7 +191,7 @@ func (d *Daemon) buildHealthRow(c doctor.Check, win fyne.Window, rebuild func())
 		case c.HasTerminalFix():
 			btn = primaryButton("Fix in terminal", func() {
 				cmd := c.FixCommand() + `; echo; echo "Press enter to close"; read _`
-				go openCommandInTerminal(cmd)
+				go terminal.OpenCommandInTerminal(cmd)
 			})
 		}
 		recheckBtn := widget.NewButton("Re-check", func() { rebuild() })
