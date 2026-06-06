@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"os"
 	"path/filepath"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/daemon"
 	"github.com/linuskendall/cosmonaut/internal/migrate"
+	"github.com/linuskendall/cosmonaut/internal/sshconfig"
 )
 
 // appletConfigPath returns the default config path for the applet
@@ -51,6 +53,23 @@ func runAppletStart(configPath *string) error {
 	cfg, _ := config.LoadConfig(absPath)
 	if cfg == nil {
 		cfg = &config.Config{Targets: map[string]config.Target{}}
+	}
+
+	// migrate.Run() above ran refreshSSHExtras with nil options (defaults
+	// only) so the v2→v3 marker rewrite happens unconditionally on the
+	// CLI path. Now that config is loaded, do a second sweep that
+	// re-applies each workspace's persisted ControlMaster preference so
+	// users who had it enabled don't lose it on first launch after
+	// upgrade.
+	optsFor := func(filename string) sshconfig.ManagedExtrasOptions {
+		provider, name := sshconfig.ProviderAndNameFromFilename(filename)
+		return sshconfig.ManagedExtrasOptions{
+			ControlMaster: cfg.WorkspaceSSHControlMaster(provider, name),
+		}
+	}
+	paths := sshconfig.ResolvePaths()
+	if _, err := sshconfig.RefreshAllManagedExtras(paths.IncludeDir, optsFor); err != nil {
+		log.Printf("post-config ssh refresh: %v", err)
 	}
 
 	d := daemon.New(cfg, absPath)

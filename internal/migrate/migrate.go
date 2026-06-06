@@ -51,10 +51,20 @@ func Run() {
 // for YubiKey users) take effect for codespaces created on older versions.
 // Idempotent: a no-op once every conf is at the current version.
 //
-// Migration runs before config is loaded, so optsFor is nil here — every
-// conf is re-written with the default options (ControlMaster off). The
-// applet's per-workspace ControlMaster setting takes effect on the next
-// launch through that workspace's PrepareSSH.
+// This is the first (defaults-only) pass: migration runs before config
+// is loaded — Run() is invoked from the applet startup path in
+// daemon_cmd.go before LoadConfig — so optsFor is nil here and every
+// conf is re-written with the default ManagedExtrasOptions
+// (ControlMaster off). That's enough to drive the v2→v3 marker rewrite
+// for older confs, which is the load-bearing piece this sweep
+// guarantees.
+//
+// daemon_cmd.go then does a second sweep once config is loaded that
+// supplies the real per-workspace ControlMaster setting, so users who
+// had ControlMaster enabled before the upgrade don't lose it on first
+// launch. The pre-load pass is retained so the v2→v3 marker rewrite
+// runs even on code paths that might skip the post-load sweep (e.g. if
+// LoadConfig were ever called lazily in the future).
 func refreshSSHExtras() {
 	paths := sshconfig.ResolvePaths()
 	n, err := sshconfig.RefreshAllManagedExtras(paths.IncludeDir, nil)

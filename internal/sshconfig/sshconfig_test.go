@@ -402,3 +402,96 @@ func TestRefreshAllManagedExtrasAppliesPerFileOpts(t *testing.T) {
 		t.Error("plain.conf should not contain ControlMaster")
 	}
 }
+
+func TestRefreshManagedExtrasMigratesV2ToV3PreservingControlMaster(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cs-demo.conf")
+	// A v2-marked managed block as written by older cosmonaut versions.
+	// Note: v2 didn't carry ControlMaster lines; the user's ControlMaster
+	// preference is only known via the post-load sweep that supplies opts.
+	v2 := "Host cs-demo\n  HostName github.com\n" +
+		"  # BEGIN cosmonaut managed extras v2\n" +
+		"  ServerAliveInterval 15\n" +
+		"  ServerAliveCountMax 3\n" +
+		"  ConnectionAttempts 3\n" +
+		"  IdentityAgent none\n" +
+		"  PKCS11Provider none\n" +
+		"  # END cosmonaut managed extras v2\n"
+	if err := os.WriteFile(path, []byte(v2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := RefreshManagedExtras(path, ManagedExtrasOptions{ControlMaster: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected v2 block to be rewritten")
+	}
+	data, _ := os.ReadFile(path)
+	got := string(data)
+	if !strings.Contains(got, "# BEGIN cosmonaut managed extras v3") {
+		t.Errorf("expected v3 begin marker, got:\n%s", got)
+	}
+	if !strings.Contains(got, "# END cosmonaut managed extras v3") {
+		t.Errorf("expected v3 end marker, got:\n%s", got)
+	}
+	if strings.Contains(got, "extras v2") {
+		t.Errorf("v2 markers should have been replaced, got:\n%s", got)
+	}
+	if !strings.Contains(got, "ControlMaster auto") {
+		t.Errorf("expected ControlMaster auto in rewritten block, got:\n%s", got)
+	}
+}
+
+func TestRefreshAllManagedExtrasOnRealFilenames(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cs-abc.conf"), []byte("Host cs-abc\n  HostName github.com\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "coder.conf"), []byte("Host coder.*\n  ProxyCommand coder ssh --stdio %h\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	optsFor := func(name string) ManagedExtrasOptions {
+		return ManagedExtrasOptions{ControlMaster: name == "cs-abc.conf"}
+	}
+	if _, err := RefreshAllManagedExtras(dir, optsFor); err != nil {
+		t.Fatal(err)
+	}
+	gh, _ := os.ReadFile(filepath.Join(dir, "cs-abc.conf"))
+	coder, _ := os.ReadFile(filepath.Join(dir, "coder.conf"))
+	if !strings.Contains(string(gh), "ControlMaster auto") {
+		t.Errorf("cs-abc.conf should contain ControlMaster auto, got:\n%s", gh)
+	}
+	if !strings.Contains(string(gh), "# BEGIN cosmonaut managed extras v3") {
+		t.Errorf("cs-abc.conf should carry the v3 marker, got:\n%s", gh)
+	}
+	if strings.Contains(string(coder), "ControlMaster") {
+		t.Errorf("coder.conf should not contain ControlMaster, got:\n%s", coder)
+	}
+	if !strings.Contains(string(coder), "# BEGIN cosmonaut managed extras v3") {
+		t.Errorf("coder.conf should still carry the v3 marker, got:\n%s", coder)
+	}
+}
+
+func TestProviderAndNameFromFilename(t *testing.T) {
+	cases := []struct {
+		filename     string
+		wantProvider string
+		wantName     string
+	}{
+		{"coder.conf", "coder", ""},
+		{"cs-abc.conf", "github", "cs-abc"},
+		{"cs-abc-123.conf", "github", "cs-abc-123"},
+		{"my-workspace.conf", "github", "my-workspace"},
+		{"plain.conf", "github", "plain"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.filename, func(t *testing.T) {
+			gotProvider, gotName := ProviderAndNameFromFilename(tc.filename)
+			if gotProvider != tc.wantProvider || gotName != tc.wantName {
+				t.Errorf("ProviderAndNameFromFilename(%q) = (%q, %q), want (%q, %q)",
+					tc.filename, gotProvider, gotName, tc.wantProvider, tc.wantName)
+			}
+		})
+	}
+}
