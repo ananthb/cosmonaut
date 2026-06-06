@@ -71,7 +71,8 @@ func rootCmd() *cobra.Command {
 		Long: `Resolve a workspace and open it in your editor over SSH.
 
 With a target name, settings come from the config file. Without one, the
-persistent terminal applet opens (same as ` + "`cosmonaut tui`" + `). See the
+persistent terminal applet opens — a keyboard-driven mirror of the Fyne
+GUI's workspace list, per-workspace detail, and settings. See the
 ` + "`applet`" + ` subcommand for the tray app, ` + "`shell`" + ` for a remote SSH shell,
 ` + "`resolve`" + ` for a JSON dump of a workspace's SSH alias (no editor launch),
 and ` + "`doctor`" + ` for environment checks.`,
@@ -106,7 +107,6 @@ and ` + "`doctor`" + ` for environment checks.`,
 	cmd.AddCommand(doctorCmd())
 	cmd.AddCommand(resolveCmd(&configPath))
 	cmd.AddCommand(shellCmd(&configPath))
-	cmd.AddCommand(tuiCmd(&configPath))
 
 	return cmd
 }
@@ -152,12 +152,12 @@ func run(configPath, targetName, codespaceName, editorFlag string, controlMaster
 	stdoutTTY := term.IsTerminal(int(os.Stdout.Fd()))
 	interactive := stdinTTY && stdoutTTY
 
-	// Bare `cosmonaut` with no target, no --codespace, and no --editor
-	// override drops the user straight into the persistent TUI applet.
-	// Same destination as `cosmonaut tui` — saves typing the subcommand
-	// for the common case. Scripts that need a one-shot resolution pass
-	// a target name or --codespace and follow the existing launch path.
-	if interactive && targetName == "" && codespaceName == "" && cfg.DefaultTarget == "" && editorFlag == "" {
+	// Bare `cosmonaut` always opens the terminal applet; pass a target
+	// or --codespace for a one-shot launch.
+	if interactive && targetName == "" && codespaceName == "" {
+		if editorFlag != "" {
+			cfg.Editor = editorFlag
+		}
 		data := tui.NewAppletData(cfg, absConfigPath)
 		return tui.RunApplet(data)
 	}
