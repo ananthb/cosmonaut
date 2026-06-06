@@ -213,6 +213,56 @@
             platforms = [ "x86_64-linux" "aarch64-darwin" ];
           };
         };
+        # cosmonautLint runs the gofumpt + golangci-lint gate. Exposed
+        # as `apps.lint` so the pre-commit hook and CI both go through
+        # `nix run .#lint`.
+        cosmonautLint = pkgs.writeShellApplication {
+          name = "cosmonaut-lint";
+          runtimeInputs = [ pkgs.go pkgs.gofumpt pkgs.golangci-lint ];
+          text = ''
+            unformatted="$(gofumpt -l .)"
+            if [ -n "$unformatted" ]; then
+              echo "gofumpt found unformatted files:" >&2
+              echo "$unformatted" >&2
+              echo "Run \`gofumpt -w .\` to fix." >&2
+              exit 1
+            fi
+            golangci-lint run ./...
+          '';
+        };
+
+        # cosmonautTest runs `go test ./...` under xvfb on Linux (Fyne
+        # tests open a display) and natively on macOS. Exposed as
+        # `apps.test` so CI calls a single command and contributors can
+        # replicate the CI test run locally with `nix run .#test`.
+        cosmonautTest = pkgs.writeShellApplication {
+          name = "cosmonaut-test";
+          runtimeInputs = [ pkgs.go ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.xvfb-run
+            pkgs.pkg-config
+            pkgs.gtk3
+            pkgs.libGL
+          ];
+          text = if pkgs.stdenv.isLinux then ''
+            exec xvfb-run -a go test ./...
+          '' else ''
+            exec go test ./...
+          '';
+        };
+
+        # cosmonautBuild orchestrates lint + test as a single command;
+        # this is what CI runs and what contributors invoke before
+        # pushing. The name is "build" in the user-facing sense — what
+        # the verification pipeline does — not "compile a binary"; the
+        # source-built derivation lives under `packages.cosmonaut`.
+        cosmonautBuild = pkgs.writeShellApplication {
+          name = "cosmonaut-build";
+          runtimeInputs = [ cosmonautLint cosmonautTest ];
+          text = ''
+            cosmonaut-lint
+            cosmonaut-test
+          '';
+        };
       in
       {
         packages = {
@@ -241,6 +291,21 @@
             pname = "cosmonaut";
             name = "cosmonaut-${if system == "x86_64-linux" then "x86_64" else "aarch64"}.AppImage";
           };
+        };
+
+        apps.lint = {
+          type = "app";
+          program = "${cosmonautLint}/bin/cosmonaut-lint";
+        };
+
+        apps.test = {
+          type = "app";
+          program = "${cosmonautTest}/bin/cosmonaut-test";
+        };
+
+        apps.build = {
+          type = "app";
+          program = "${cosmonautBuild}/bin/cosmonaut-build";
         };
 
         devShells.default = pkgs.mkShell {
@@ -278,6 +343,23 @@
             # Run tests as: `xvfb-run -a go test ./...`
             pkgs.xvfb-run
           ];
+
+          # Install a pre-commit hook that runs the lint app. Idempotent
+          # — only overwrites the cosmonaut-managed marker, so a user's
+          # custom hook is left alone.
+          shellHook = ''
+            hook=".git/hooks/pre-commit"
+            marker="# cosmonaut-managed"
+            if [ -d .git ] && { [ ! -f "$hook" ] || grep -q "$marker" "$hook"; }; then
+              mkdir -p .git/hooks
+              cat > "$hook" <<EOF
+            #!/usr/bin/env bash
+            $marker
+            exec nix run .#lint
+            EOF
+              chmod +x "$hook"
+            fi
+          '';
         };
       }
     );

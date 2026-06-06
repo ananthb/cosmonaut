@@ -19,11 +19,11 @@ jobs:
           restore-prefixes-first-match: nix-${{ runner.os }}-
           gc-max-store-size-linux: 5G
 
-      - name: Build
-        run: nix build
+      - name: Build (lint + test)
+        run: nix run .#build
 
-      - name: Test
-        run: nix develop --command xvfb-run -a go test ./...
+      - name: Compile binary
+        run: nix build
 
   goreleaser-check:
     name: goreleaser check + snapshot smoke test
