@@ -49,7 +49,9 @@ func TestLoadConfig(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	os.WriteFile(path, []byte(content), 0644)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg, err := LoadConfig(path)
 	if err != nil {
@@ -132,7 +134,9 @@ func TestLoadCoderConfig(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	os.WriteFile(path, []byte(content), 0644)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg, err := LoadConfig(path)
 	if err != nil {

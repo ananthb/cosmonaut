@@ -3,6 +3,7 @@ package editor
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,7 +23,7 @@ func (z *ZedEditor) FindBinary() (string, error) {
 			return p, nil
 		}
 	}
-	return "", fmt.Errorf("Zed editor not found on PATH (tried \"zed\" and \"zeditor\")")
+	return "", fmt.Errorf("zed editor not found on PATH (tried \"zed\" and \"zeditor\")")
 }
 
 func (z *ZedEditor) ConfigureConnection(sshAlias, workspacePath, nickname string, uploadBinary *bool) error {
@@ -85,14 +86,19 @@ func connectionIdentity(conn map[string]any) string {
 }
 
 func upsertConnection(settings map[string]any, conn sshConnection) map[string]any {
-	result := make(map[string]any, len(settings))
-	for k, v := range settings {
-		result[k] = v
+	result := maps.Clone(settings)
+	if result == nil {
+		result = map[string]any{}
 	}
 
-	connJSON, _ := json.Marshal(conn)
+	connJSON, err := json.Marshal(conn)
+	if err != nil {
+		return result
+	}
 	var connMap map[string]any
-	json.Unmarshal(connJSON, &connMap)
+	if err := json.Unmarshal(connJSON, &connMap); err != nil {
+		return result
+	}
 
 	newIdentity := connectionIdentity(connMap)
 
@@ -115,9 +121,7 @@ func upsertConnection(settings map[string]any, conn sshConnection) map[string]an
 
 	if found >= 0 {
 		merged := existing[found].(map[string]any)
-		for k, v := range connMap {
-			merged[k] = v
-		}
+		maps.Copy(merged, connMap)
 		existing[found] = merged
 	} else {
 		existing = append(existing, connMap)
@@ -146,7 +150,7 @@ func upsertConnectionInFile(settingsPath string, conn sshConnection) error {
 	updated := upsertConnection(current, conn)
 
 	dir := filepath.Dir(settingsPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 
@@ -154,7 +158,7 @@ func upsertConnectionInFile(settingsPath string, conn sshConnection) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(settingsPath, append(out, '\n'), 0644)
+	return os.WriteFile(settingsPath, append(out, '\n'), 0o644)
 }
 
 var (

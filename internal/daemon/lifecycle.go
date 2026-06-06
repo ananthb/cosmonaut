@@ -113,9 +113,13 @@ func sendNotification(msg string) {
 	switch runtime.GOOS {
 	case "darwin":
 		script := fmt.Sprintf(`display notification %q with title "cosmonaut"`, msg)
-		exec.Command("osascript", "-e", script).Run()
+		if err := exec.Command("osascript", "-e", script).Run(); err != nil {
+			log.Printf("notify: osascript: %v", err)
+		}
 	case "linux":
-		exec.Command("notify-send", "cosmonaut", msg).Run()
+		if err := exec.Command("notify-send", "cosmonaut", msg).Run(); err != nil {
+			log.Printf("notify: notify-send: %v", err)
+		}
 	}
 }
 

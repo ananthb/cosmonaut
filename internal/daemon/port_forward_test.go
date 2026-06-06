@@ -55,7 +55,7 @@ func TestEnsureLocalPortAvailableDetectsBoundPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	port := ln.Addr().(*net.TCPAddr).Port
 	err = ensureLocalPortAvailable("tcp", port)

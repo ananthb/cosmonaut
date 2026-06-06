@@ -40,6 +40,13 @@ type PortForwardManager struct {
 }
 
 func newPortForwardManager() *PortForwardManager {
+	return NewPortForwardManager()
+}
+
+// NewPortForwardManager constructs an empty PortForwardManager. Exported so
+// the TUI applet (in internal/tui) can reuse the same supervisor logic that
+// the Fyne applet uses, rather than reimplementing it.
+func NewPortForwardManager() *PortForwardManager {
 	return &PortForwardManager{
 		forwards: make(map[portForwardKey]*managedPortForward),
 		lastErr:  make(map[portForwardKey]string),

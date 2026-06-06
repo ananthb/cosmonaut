@@ -288,17 +288,14 @@ func (d *Daemon) buildAuthSection(win fyne.Window) fyne.CanvasObject {
 }
 
 func (d *Daemon) buildEditorSection() fyne.CanvasObject {
-	currentEditor := d.Cfg.Editor
-	if currentEditor == "" {
-		currentEditor = "zed"
-	}
-	editorSelect := widget.NewSelect([]string{"zed", "neovim"}, func(val string) {
+	editorEntry := widget.NewEntry()
+	editorEntry.SetPlaceHolder("zed (default)")
+	editorEntry.SetText(d.Cfg.Editor)
+	editorEntry.OnSubmitted = func(val string) {
 		d.Cfg.Editor = val
 		d.persistConfig()
-	})
-	editorSelect.Selected = currentEditor
-
-	return widget.NewForm(widget.NewFormItem("Editor", editorSelect))
+	}
+	return widget.NewForm(widget.NewFormItem("Editor", editorEntry))
 }
 
 func (d *Daemon) buildDaemonSection() fyne.CanvasObject {

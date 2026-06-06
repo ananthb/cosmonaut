@@ -47,7 +47,7 @@ Host coder.*
 Host *.coder
   ProxyCommand coder ssh --stdio %h
 `
-	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	got, ok := ReadExistingWorkspaceAlias(paths, "coder", "my-workspace")
@@ -157,7 +157,7 @@ func TestRefreshManagedExtrasUpgradesLegacyFile(t *testing.T) {
 	path := filepath.Join(dir, "cs-demo.conf")
 	// Pre-sentinel cosmonaut output: keepalive only, no IdentityAgent.
 	legacy := "Host cs-demo\n  HostName github.com\n  ServerAliveInterval 15\n  ServerAliveCountMax 3\n  ConnectionAttempts 3\n"
-	if err := os.WriteFile(path, []byte(legacy), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	changed, err := RefreshManagedExtras(path, ManagedExtrasOptions{})
@@ -201,7 +201,7 @@ func TestNeedsHostStarScoping(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config")
-			if err := os.WriteFile(path, []byte(tc.body), 0644); err != nil {
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			got := NeedsHostStarScoping(path)
@@ -220,7 +220,7 @@ func TestScopeHostStarBlocks(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config")
 	original := "Include ~/.ssh/cosmonaut/*.conf\n\nHost *\n  IdentityFile ~/.ssh/yubikey\n"
-	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	changed, err := ScopeHostStarBlocks(path)
@@ -247,7 +247,7 @@ func TestScopeHostStarBlocks(t *testing.T) {
 		t.Error("backup content mismatch")
 	}
 	// Idempotent: second call no-ops and doesn't overwrite the backup.
-	if err := os.WriteFile(backup, []byte("sentinel"), 0644); err != nil {
+	if err := os.WriteFile(backup, []byte("sentinel"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	changed, err = ScopeHostStarBlocks(path)
@@ -265,13 +265,13 @@ func TestScopeHostStarBlocks(t *testing.T) {
 
 func TestRefreshAllManagedExtras(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "a.conf"), []byte("Host a\n  HostName a\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "a.conf"), []byte("Host a\n  HostName a\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "b.conf"), []byte("Host b\n  HostName b\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "b.conf"), []byte("Host b\n  HostName b\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "skip.txt"), []byte("ignored"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "skip.txt"), []byte("ignored"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	n, err := RefreshAllManagedExtras(dir, nil)
@@ -289,10 +289,10 @@ func TestRefreshAllManagedExtras(t *testing.T) {
 
 func TestRefreshAllManagedExtrasAppliesPerFileOpts(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "withcm.conf"), []byte("Host a\n  HostName a\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "withcm.conf"), []byte("Host a\n  HostName a\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "plain.conf"), []byte("Host b\n  HostName b\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "plain.conf"), []byte("Host b\n  HostName b\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := RefreshAllManagedExtras(dir, func(name string) ManagedExtrasOptions {

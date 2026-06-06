@@ -36,7 +36,11 @@ func (d *Daemon) startHotkeyListener() {
 		log.Printf("hotkey: failed to register %q: %v", hotkeyStr, err)
 		return
 	}
-	defer hk.Unregister()
+	defer func() {
+		if err := hk.Unregister(); err != nil {
+			log.Printf("hotkey: unregister: %v", err)
+		}
+	}()
 
 	log.Printf("hotkey: registered %s", hotkeyStr)
 
@@ -139,16 +143,16 @@ var keyMap = map[string]hotkey.Key{
 	"0": hotkey.Key0, "1": hotkey.Key1, "2": hotkey.Key2, "3": hotkey.Key3,
 	"4": hotkey.Key4, "5": hotkey.Key5, "6": hotkey.Key6, "7": hotkey.Key7,
 	"8": hotkey.Key8, "9": hotkey.Key9,
-	"space":     hotkey.KeySpace,
-	"return":    hotkey.KeyReturn, "enter": hotkey.KeyReturn,
-	"escape":    hotkey.KeyEscape, "esc": hotkey.KeyEscape,
-	"tab":       hotkey.KeyTab,
-	"delete":    hotkey.KeyDelete, "backspace": hotkey.KeyDelete,
-	"up":        hotkey.KeyUp, "down": hotkey.KeyDown,
-	"left":      hotkey.KeyLeft, "right": hotkey.KeyRight,
-	"f1":  hotkey.KeyF1, "f2": hotkey.KeyF2, "f3": hotkey.KeyF3,
-	"f4":  hotkey.KeyF4, "f5": hotkey.KeyF5, "f6": hotkey.KeyF6,
-	"f7":  hotkey.KeyF7, "f8": hotkey.KeyF8, "f9": hotkey.KeyF9,
+	"space":  hotkey.KeySpace,
+	"return": hotkey.KeyReturn, "enter": hotkey.KeyReturn,
+	"escape": hotkey.KeyEscape, "esc": hotkey.KeyEscape,
+	"tab":    hotkey.KeyTab,
+	"delete": hotkey.KeyDelete, "backspace": hotkey.KeyDelete,
+	"up": hotkey.KeyUp, "down": hotkey.KeyDown,
+	"left": hotkey.KeyLeft, "right": hotkey.KeyRight,
+	"f1": hotkey.KeyF1, "f2": hotkey.KeyF2, "f3": hotkey.KeyF3,
+	"f4": hotkey.KeyF4, "f5": hotkey.KeyF5, "f6": hotkey.KeyF6,
+	"f7": hotkey.KeyF7, "f8": hotkey.KeyF8, "f9": hotkey.KeyF9,
 	"f10": hotkey.KeyF10, "f11": hotkey.KeyF11, "f12": hotkey.KeyF12,
 }
 

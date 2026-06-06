@@ -77,7 +77,7 @@ func migrateDir(oldDir, newDir string) {
 	}
 
 	// Create a symlink so both old and new paths work.
-	if err := os.MkdirAll(filepath.Dir(newDir), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(newDir), 0o755); err != nil {
 		log.Printf("migrate: mkdir %s: %v", filepath.Dir(newDir), err)
 		return
 	}
@@ -108,7 +108,7 @@ func migrateSSHInclude(sshConfigPath string) {
 		content = strings.Replace(content, oldSSHIncl, newSSHIncl, 1)
 	}
 
-	if err := os.WriteFile(sshConfigPath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(sshConfigPath, []byte(content), 0o644); err != nil {
 		log.Printf("migrate: update %s: %v", sshConfigPath, err)
 	} else {
 		log.Printf("migrate: updated SSH include in %s", sshConfigPath)

@@ -21,9 +21,6 @@ var iconActiveSVG []byte
 //go:embed assets/icon_starting.svg
 var iconStartingSVG []byte
 
-//go:embed assets/icon_error.svg
-var iconErrorSVG []byte
-
 // trayIconIdle returns the helmet icon (no active codespaces).
 func trayIconIdle() fyne.Resource {
 	return theme.NewThemedResource(fyne.NewStaticResource("icon.svg", iconIdleSVG))
@@ -37,11 +34,6 @@ func trayIconActive() fyne.Resource {
 // trayIconStarting returns the helmet icon with half dot (codespaces starting).
 func trayIconStarting() fyne.Resource {
 	return theme.NewThemedResource(fyne.NewStaticResource("icon_starting.svg", iconStartingSVG))
-}
-
-// trayIconError returns the helmet icon with exclamation dot (error state).
-func trayIconError() fyne.Resource {
-	return theme.NewThemedResource(fyne.NewStaticResource("icon_error.svg", iconErrorSVG))
 }
 
 // appIcon returns the app icon for dock/taskbar. Reuses the active-state

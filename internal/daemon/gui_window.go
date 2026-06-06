@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"fmt"
-	"log"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -13,11 +12,6 @@ import (
 	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/history"
 	"github.com/linuskendall/cosmonaut/internal/provider"
-)
-
-const (
-	guiWidth  float32 = 560
-	guiHeight float32 = 400
 )
 
 // unifiedWindow is the main Cosmonaut window with sidebar + content.
@@ -34,62 +28,6 @@ type unifiedWindow struct {
 	filter       string
 	filtered     []string // repos matching current filter
 	coderTargets []string
-}
-
-func (d *Daemon) newUnifiedWindow() *unifiedWindow {
-	win := d.app.NewWindow("Cosmonaut")
-	win.Resize(fyne.NewSize(guiWidth, guiHeight))
-	win.CenterOnScreen()
-
-	uw := &unifiedWindow{
-		daemon:  d,
-		win:     win,
-		content: container.NewStack(),
-	}
-
-	// Build initial repo list.
-	uw.loadRepos()
-
-	// Fetch all user repos in background.
-	go func() {
-		allUserRepos, err := provider.NewGitHubManager(d.Runner).ListRepositories()
-		if err != nil {
-			log.Printf("gui: fetch repos: %v", err)
-			return
-		}
-		fyne.Do(func() {
-			uw.allRepos = mergeRepos(uw.allRepos, allUserRepos)
-			uw.applyFilter()
-			uw.tree.Refresh()
-		})
-	}()
-
-	// Build sidebar.
-	filterEntry := widget.NewEntry()
-	filterEntry.PlaceHolder = "Filter..."
-	filterEntry.OnChanged = func(text string) {
-		uw.filter = text
-		uw.applyFilter()
-		uw.tree.Refresh()
-	}
-
-	uw.tree = uw.buildTree()
-
-	sidebar := container.NewBorder(
-		container.NewPadded(filterEntry), // top
-		nil,                              // bottom
-		nil, nil,
-		uw.tree, // center
-	)
-
-	// Initial content: welcome.
-	uw.showWelcome()
-
-	split := container.NewHSplit(sidebar, uw.content)
-	split.Offset = 0.35
-
-	win.SetContent(split)
-	return uw
 }
 
 func (uw *unifiedWindow) loadRepos() {
@@ -141,6 +79,7 @@ func repoNodeID(repo string) widget.TreeNodeID            { return repoPrefix + 
 func workspaceNodeID(providerName, name string) widget.TreeNodeID {
 	return wsPrefix + providerName + ":" + name
 }
+
 func newNodeID(providerName, context string) widget.TreeNodeID {
 	return newPrefix + providerName + ":" + context
 }
@@ -604,12 +543,4 @@ func countRecentRepos(sorted []string, hist *history.History) int {
 		n++
 	}
 	return n
-}
-
-// createGUIWindow creates a standard GUI window (used by flow for progress).
-func (d *Daemon) createGUIWindow(title string) fyne.Window {
-	win := d.app.NewWindow(title)
-	win.Resize(fyne.NewSize(guiWidth, guiHeight))
-	win.CenterOnScreen()
-	return win
 }

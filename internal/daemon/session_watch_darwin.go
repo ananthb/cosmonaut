@@ -15,7 +15,11 @@ func waitPidExit(pid int) {
 		fallbackWaitPid(pid)
 		return
 	}
-	defer syscall.Close(kq)
+	defer func() {
+		if err := syscall.Close(kq); err != nil {
+			log.Printf("session watch: kqueue close: %v", err)
+		}
+	}()
 
 	ev := syscall.Kevent_t{
 		Ident:  uint64(pid),

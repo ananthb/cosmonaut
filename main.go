@@ -11,14 +11,13 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
@@ -26,7 +25,6 @@ import (
 	"github.com/linuskendall/cosmonaut/internal/editor"
 	"github.com/linuskendall/cosmonaut/internal/history"
 	"github.com/linuskendall/cosmonaut/internal/provider"
-	"github.com/linuskendall/cosmonaut/internal/slug"
 	"github.com/linuskendall/cosmonaut/internal/sshconfig"
 	"github.com/linuskendall/cosmonaut/internal/tui"
 )
@@ -62,8 +60,6 @@ func isAppBundle() bool {
 func rootCmd() *cobra.Command {
 	var (
 		configPath    string
-		noOpen        bool
-		dryRun        bool
 		codespaceName string
 		editorFlag    string
 		controlMaster bool
@@ -74,10 +70,10 @@ func rootCmd() *cobra.Command {
 		Short: "Open a remote workspace (Codespaces or Coder) in your editor",
 		Long: `Resolve a workspace and open it in your editor over SSH.
 
-With a target name, settings come from the config file. Without one, an
-interactive picker lets you choose (or create) a workspace. See the
-` + "`applet`" + ` subcommand for the tray app, ` + "`shell`" + ` for a remote SSH shell, and
-` + "`doctor`" + ` for environment checks.`,
+With a target name, settings come from the config file. Without one, the
+persistent terminal applet opens (same as ` + "`cosmonaut tui`" + `). See the
+` + "`applet`" + ` subcommand for the tray app, ` + "`shell`" + ` for a remote SSH shell,
+and ` + "`doctor`" + ` for environment checks.`,
 		Args:              cobra.MaximumNArgs(1),
 		SilenceUsage:      true,
 		SilenceErrors:     true,
@@ -92,15 +88,13 @@ interactive picker lets you choose (or create) a workspace. See the
 				v := controlMaster
 				cmOverride = &v
 			}
-			return run(configPath, targetName, codespaceName, editorFlag, noOpen, dryRun, cmOverride)
+			return run(configPath, targetName, codespaceName, editorFlag, cmOverride)
 		},
 	}
 
 	cmd.PersistentFlags().StringVar(&configPath, "config", defaultConfigPath, "config file path")
-	cmd.Flags().BoolVar(&noOpen, "no-open", false, "prepare SSH config and print target; don't launch the editor")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "don't create a workspace or launch the editor")
 	cmd.Flags().StringVar(&codespaceName, "codespace", "", "launch this codespace, skipping selection")
-	cmd.Flags().StringVar(&editorFlag, "editor", "", "zed (default) or neovim")
+	cmd.Flags().StringVar(&editorFlag, "editor", "", "editor binary to launch (empty = zed, with built-in settings.json integration)")
 	cmd.Flags().BoolVar(&controlMaster, "control-master", true, "use SSH ControlMaster multiplexing for instant reconnects")
 
 	_ = cmd.RegisterFlagCompletionFunc("config", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -110,6 +104,7 @@ interactive picker lets you choose (or create) a workspace. See the
 	cmd.AddCommand(appletCmd(&configPath))
 	cmd.AddCommand(doctorCmd())
 	cmd.AddCommand(shellCmd(&configPath))
+	cmd.AddCommand(tuiCmd(&configPath))
 
 	return cmd
 }
@@ -140,7 +135,7 @@ func completeTargets(configPath *string) func(*cobra.Command, []string, string) 
 	}
 }
 
-func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRun bool, controlMasterOverride *bool) error {
+func run(configPath, targetName, codespaceName, editorFlag string, controlMasterOverride *bool) error {
 	absConfigPath, err := filepath.Abs(configPath)
 	if err != nil {
 		return err
@@ -150,6 +145,19 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
+
+	interactive := term.IsTerminal(int(os.Stdin.Fd()))
+
+	// Bare `cosmonaut` with no target, no --codespace, and no --editor
+	// override drops the user straight into the persistent TUI applet.
+	// Same destination as `cosmonaut tui` — saves typing the subcommand
+	// for the common case. Scripts that need a one-shot resolution pass
+	// a target name or --codespace and follow the existing launch path.
+	if interactive && targetName == "" && codespaceName == "" && cfg.DefaultTarget == "" && editorFlag == "" {
+		data := tui.NewAppletData(cfg, absConfigPath)
+		return tui.RunApplet(data)
+	}
+
 	manager, err := provider.NewManager(cfg)
 	if err != nil {
 		return err
@@ -157,7 +165,6 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 	if err := manager.EnsurePrereqs(); err != nil {
 		return err
 	}
-	interactive := term.IsTerminal(int(os.Stdin.Fd()))
 
 	// Authenticate.
 	if interactive {
@@ -172,14 +179,13 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 		}
 	}
 
-	// Resolve target + select workspace.
-	// Dynamic mode uses a loop so the user can go back from workspace selection to repo selection.
+	// Resolve target metadata from the positional arg or defaultTarget.
 	var target config.Target
 	var resolvedTargetName string
 	var selected *provider.Workspace
-	dynamicMode := false
 
-	if targetName != "" {
+	switch {
+	case targetName != "":
 		// If the argument looks like owner/repo, treat it as a direct repo
 		// name rather than a config target (used by the tray for history entries).
 		if strings.Contains(targetName, "/") {
@@ -192,20 +198,29 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 		} else {
 			return fmt.Errorf("unknown target %q in %s", targetName, absConfigPath)
 		}
-	} else if cfg != nil && cfg.DefaultTarget != "" {
+	case cfg != nil && cfg.DefaultTarget != "":
 		t, ok := cfg.Targets[cfg.DefaultTarget]
 		if !ok {
 			return fmt.Errorf("default target %q not found in %s", cfg.DefaultTarget, absConfigPath)
 		}
 		target = t
 		resolvedTargetName = cfg.DefaultTarget
-	} else if interactive {
-		dynamicMode = true
-	} else {
+	case interactive:
+		// No target, no defaultTarget, but interactive — hand off to the
+		// TUI applet so the user can pick (or create). This is the case
+		// where the gate above didn't fire because --editor was set; we
+		// honor --editor by overriding cfg.Editor for the applet's
+		// session before launching it.
+		if editorFlag != "" {
+			cfg.Editor = editorFlag
+		}
+		data := tui.NewAppletData(cfg, absConfigPath)
+		return tui.RunApplet(data)
+	default:
 		return fmt.Errorf("no target was provided and config.defaultTarget is not set")
 	}
 
-	// Direct codespace launch: bypass all TUI selection.
+	// Direct codespace launch: bypass all selection.
 	if codespaceName != "" {
 		if target.Repository == "" && target.ExplicitWorkspaceName(manager.Name()) == "" {
 			return fmt.Errorf("--codespace requires a target or repo argument to resolve workspace settings")
@@ -216,102 +231,11 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 		}
 	}
 
-	if selected != nil {
-		// Already resolved (e.g. --codespace flag); skip selection.
-	} else if dynamicMode {
-		if manager.Name() == provider.NameCoder {
-			var allWorkspaces []provider.Workspace
-			allWorkspaces, err = tui.RunWithSpinnerResult("Fetching your coder workspaces", func() ([]provider.Workspace, error) {
-				return manager.ListAllWorkspaces()
-			})
-			if err != nil {
-				return err
-			}
-			if len(allWorkspaces) == 0 {
-				return fmt.Errorf("no coder workspaces found and no target was provided")
-			}
-			target = config.Target{WorkspacePath: guessWorkspacePath(target, nil)}
-			resolvedTargetName = allWorkspaces[0].Name
-			sel, del, selErr := runSelectionTUI(allWorkspaces, target, dryRun)
-			if selErr != nil {
-				return selErr
-			}
-			if del != nil {
-				return fmt.Errorf("workspace deletion is not supported for provider %q", manager.Name())
-			}
-			selected = sel
-			if selected != nil {
-				target = applyWorkspaceDefaults(target, *selected)
-				resolvedTargetName = selected.Name
-			}
-		} else {
-			// Fetch all workspaces and all user repos for the repo picker.
-			var allWorkspaces []provider.Workspace
-			var allUserRepos []string
-			allWorkspaces, err = tui.RunWithSpinnerResult("Fetching your workspaces", func() ([]provider.Workspace, error) {
-				return manager.ListAllWorkspaces()
-			})
-			if err != nil {
-				return err
-			}
-			allUserRepos, err = tui.RunWithSpinnerResult("Fetching your repositories", func() ([]string, error) {
-				return manager.ListRepositories()
-			})
-			if err != nil {
-				return err
-			}
-
-			repos := provider.UniqueRepos(allWorkspaces)
-			repos = mergeRepos(repos, configRepos(cfg))
-			repos = mergeRepos(repos, allUserRepos)
-
-			hist := history.Load()
-			sorted := hist.SortRepos(repos)
-			recentCount := countRecent(sorted, hist)
-
-			// Loop: repo selection → workspace selection (with back).
-			for {
-				repo, err := tui.RunRepoSelection(sorted, recentCount)
-				if err != nil {
-					return err
-				}
-
-				target, resolvedTargetName = targetForRepo(cfg, repo, manager.Name())
-				repoWorkspaces := provider.FilterByRepo(allWorkspaces, repo)
-
-				if len(repoWorkspaces) == 0 {
-					selected = nil
-					break
-				}
-
-				sel, back, del, err := runSelectionTUIWithBack(repoWorkspaces, target, dryRun)
-				if err != nil {
-					return err
-				}
-				if back {
-					continue
-				}
-				if del != nil {
-					if err := deleteWorkspaceWithSpinner(manager, del.Name); err != nil {
-						return err
-					}
-					allWorkspaces = removeWorkspace(allWorkspaces, del.Name)
-					repos = provider.UniqueRepos(allWorkspaces)
-					sorted = hist.SortRepos(repos)
-					recentCount = countRecent(sorted, hist)
-					if len(repos) == 0 {
-						return fmt.Errorf("no workspaces remain")
-					}
-					continue
-				}
-				selected = sel
-				break
-			}
-		}
-	} else {
-		// Static target: list workspaces for the specific target.
-		allowBack := interactive && targetName == ""
-
+	// Static-target resolution: list, then either auto-pick a single match,
+	// hand off to the applet for selection (multiple matches, interactive)
+	// or pre-fill the create form (no matches, interactive), or error
+	// (non-interactive ambiguity / non-interactive missing match).
+	if selected == nil {
 		var workspaces []provider.Workspace
 		if interactive {
 			workspaces, err = tui.RunWithSpinnerResult("Listing workspaces", func() ([]provider.Workspace, error) {
@@ -324,165 +248,48 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 			return err
 		}
 
-		wentBack := false
-		if len(workspaces) > 0 {
-			if len(workspaces) == 1 && !interactive {
-				selected = &workspaces[0]
-			} else if interactive {
-				for {
-					if allowBack {
-						sel, back, del, selErr := runSelectionTUIWithBack(workspaces, target, dryRun)
-						if selErr != nil {
-							return selErr
-						}
-						if back {
-							wentBack = true
-							break
-						}
-						if del != nil {
-							if delErr := deleteWorkspaceWithSpinner(manager, del.Name); delErr != nil {
-								return delErr
-							}
-							workspaces = removeWorkspace(workspaces, del.Name)
-							if len(workspaces) == 0 {
-								break
-							}
-							continue
-						}
-						selected = sel
-						break
-					} else {
-						sel, del, selErr := runSelectionTUI(workspaces, target, dryRun)
-						if selErr != nil {
-							return selErr
-						}
-						if del != nil {
-							if delErr := deleteWorkspaceWithSpinner(manager, del.Name); delErr != nil {
-								return delErr
-							}
-							workspaces = removeWorkspace(workspaces, del.Name)
-							if len(workspaces) == 0 {
-								break
-							}
-							continue
-						}
-						selected = sel
-						break
-					}
-				}
-			} else {
-				selected, err = provider.ChooseWorkspace(workspaces, &target)
-				if err != nil {
-					return err
-				}
+		switch {
+		case len(workspaces) == 1:
+			selected = &workspaces[0]
+		case len(workspaces) > 1 && interactive:
+			// Multiple matches: open the applet narrowed to the target's
+			// repo so the user can pick.
+			if editorFlag != "" {
+				cfg.Editor = editorFlag
 			}
-		} else if allowBack {
-			wentBack = true
-		}
-
-		if wentBack {
-			var allWorkspaces []provider.Workspace
-			var allUserRepos []string
-			allWorkspaces, err = tui.RunWithSpinnerResult("Fetching your workspaces", func() ([]provider.Workspace, error) {
-				return manager.ListAllWorkspaces()
-			})
-			if err != nil {
-				return err
+			data := tui.NewAppletData(cfg, absConfigPath)
+			return tui.RunApplet(data, tui.AppletInitial{Filter: target.Repository})
+		case len(workspaces) > 1 && !interactive:
+			names := make([]string, len(workspaces))
+			for i, w := range workspaces {
+				names[i] = w.Name
 			}
-			allUserRepos, err = tui.RunWithSpinnerResult("Fetching your repositories", func() ([]string, error) {
-				return manager.ListRepositories()
-			})
-			if err != nil {
-				return err
+			return fmt.Errorf("ambiguous workspace match for target %q: %s (pass --codespace <name>)", targetName, strings.Join(names, ", "))
+		case len(workspaces) == 0 && interactive:
+			// No match: open the applet on the Create view with the repo
+			// pre-filled so the user can confirm and create.
+			if editorFlag != "" {
+				cfg.Editor = editorFlag
 			}
-
-			repos := provider.UniqueRepos(allWorkspaces)
-			repos = mergeRepos(repos, configRepos(cfg))
-			repos = mergeRepos(repos, allUserRepos)
-
-			hist := history.Load()
-			sorted := hist.SortRepos(repos)
-			recentCount := countRecent(sorted, hist)
-
-			for {
-				repo, repoErr := tui.RunRepoSelection(sorted, recentCount)
-				if repoErr != nil {
-					return repoErr
-				}
-
-				target, resolvedTargetName = targetForRepo(cfg, repo, manager.Name())
-				repoWorkspaces := provider.FilterByRepo(allWorkspaces, repo)
-
-				if len(repoWorkspaces) == 0 {
-					selected = nil
-					break
-				}
-
-				sel, back, del, selErr := runSelectionTUIWithBack(repoWorkspaces, target, dryRun)
-				if selErr != nil {
-					return selErr
-				}
-				if back {
-					continue
-				}
-				if del != nil {
-					if delErr := deleteWorkspaceWithSpinner(manager, del.Name); delErr != nil {
-						return delErr
-					}
-					allWorkspaces = removeWorkspace(allWorkspaces, del.Name)
-					repos = provider.UniqueRepos(allWorkspaces)
-					sorted = hist.SortRepos(repos)
-					recentCount = countRecent(sorted, hist)
-					if len(repos) == 0 {
-						return fmt.Errorf("no workspaces remain")
-					}
-					continue
-				}
-				selected = sel
-				break
+			data := tui.NewAppletData(cfg, absConfigPath)
+			providerName := provider.NameGitHub
+			if target.Coder != nil {
+				providerName = provider.NameCoder
 			}
+			return tui.RunApplet(data, tui.AppletInitial{Create: &tui.AppletCreateSeed{
+				Provider:   providerName,
+				Repository: target.Repository,
+			}})
+		case len(workspaces) == 0 && !interactive:
+			return fmt.Errorf("no workspace matches target %q; pre-create it (e.g. `gh codespace create`) or pass --codespace <name>", targetName)
 		}
 	}
 
-	// Create workspace if needed.
-	if selected == nil {
-		if dryRun {
-			return fmt.Errorf("no matching workspace exists and --dry-run forbids creating one")
-		}
-
-		createTarget := target
-		if interactive && manager.Name() == provider.NameGitHub {
-			workLabel, err := runWorkLabelTUI()
-			if err != nil {
-				return err
-			}
-			if workLabel != "" {
-				createTarget.DisplayName = slug.BuildDisplayName(
-					target.Repository,
-					target.Branch,
-					workLabel,
-					target.DisplayName,
-				)
-			}
-		}
-
-		if interactive && manager.Name() == provider.NameGitHub {
-			fmt.Fprintf(os.Stderr, "  Creating workspace…\n")
-		}
-		ws, createErr := manager.CreateWorkspace(createTarget, interactive)
-		if createErr != nil {
-			return createErr
-		}
-		if interactive {
-			tui.Status("✓", "Workspace created")
-		}
-		selected = ws
-	}
-
-	// Record repo in history.
 	hist := history.Load()
 	hist.Touch(target.Repository)
-	hist.Save()
+	if err := hist.Save(); err != nil {
+		log.Printf("history: save: %v", err)
+	}
 
 	// Resolve the editor to use (CLI flag overrides config).
 	editorName := editorFlag
@@ -505,22 +312,7 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 			if interactive {
 				tui.Status("⚡", fmt.Sprintf("Workspace already running, opening %s", ed.Name()))
 			}
-			if !dryRun && !noOpen {
-				return ed.LaunchRemote(alias, workspacePath)
-			}
-			if dryRun || noOpen {
-				remoteURL := fmt.Sprintf("ssh://%s/%s", alias, strings.TrimLeft(workspacePath, "/"))
-				output := map[string]string{
-					"target":    resolvedTargetName,
-					"workspace": selected.Name,
-					"provider":  selected.Provider,
-					"sshAlias":  alias,
-					"remoteUrl": remoteURL,
-				}
-				enc := json.NewEncoder(os.Stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(output)
-			}
+			return ed.LaunchRemote(alias, workspacePath)
 		}
 	}
 
@@ -571,21 +363,6 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 		tui.Status("✓", "SSH and editor config updated")
 	}
 
-	if dryRun || noOpen {
-		remoteURL := fmt.Sprintf("ssh://%s/%s", sshAlias, strings.TrimLeft(workspacePath, "/"))
-		output := map[string]string{
-			"target":    resolvedTargetName,
-			"workspace": selected.Name,
-			"provider":  selected.Provider,
-			"sshAlias":  sshAlias,
-			"remoteUrl": remoteURL,
-			"editor":    ed.Name(),
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(output)
-	}
-
 	// Launch editor.
 	if interactive {
 		if err := tui.RunWithSpinner(fmt.Sprintf("Launching %s", ed.Name()), func() error {
@@ -600,67 +377,6 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 	}
 
 	return nil
-}
-
-func countRecent(sorted []string, hist *history.History) int {
-	n := 0
-	for _, repo := range sorted {
-		found := false
-		for _, e := range hist.Entries {
-			if e.Repository == repo {
-				found = true
-				break
-			}
-		}
-		if !found {
-			break
-		}
-		n++
-	}
-	return n
-}
-
-// configRepos returns the unique repository names from config targets.
-func configRepos(cfg *config.Config) []string {
-	if cfg == nil {
-		return nil
-	}
-	seen := make(map[string]bool)
-	var repos []string
-	for _, t := range cfg.Targets {
-		if t.Repository != "" && !seen[t.Repository] {
-			seen[t.Repository] = true
-			repos = append(repos, t.Repository)
-		}
-	}
-	return repos
-}
-
-// mergeRepos adds extra repos to the list, skipping duplicates.
-func mergeRepos(base, extra []string) []string {
-	seen := make(map[string]bool, len(base))
-	for _, r := range base {
-		seen[r] = true
-	}
-	result := make([]string, len(base))
-	copy(result, base)
-	for _, r := range extra {
-		if !seen[r] {
-			seen[r] = true
-			result = append(result, r)
-		}
-	}
-	return result
-}
-
-func applyWorkspaceDefaults(target config.Target, ws provider.Workspace) config.Target {
-	if target.Repository == "" && ws.Repository != "" {
-		target.Repository = ws.Repository
-	}
-	if target.WorkspacePath == "" {
-		target.WorkspacePath = guessWorkspacePath(target, &ws)
-	}
-	return target
 }
 
 func guessWorkspacePath(target config.Target, ws *provider.Workspace) string {
@@ -701,87 +417,4 @@ func targetForRepo(cfg *config.Config, repo, _ string) (config.Target, string) {
 		Repository:    repo,
 		WorkspacePath: "/workspaces/" + repoName,
 	}, repo
-}
-
-// runSelectionTUI runs the workspace selector without back support (static target mode).
-func runSelectionTUI(workspaces []provider.Workspace, target config.Target, dryRun bool) (*provider.Workspace, *provider.Workspace, error) {
-	model := tui.NewSelectModel(workspaces, target, dryRun, false)
-	p := tea.NewProgram(model, tea.WithMouseCellMotion())
-	finalModel, err := p.Run()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	result := finalModel.(tui.SelectModel).Result()
-	if result.Quit {
-		os.Exit(0)
-	}
-	if result.Delete != nil {
-		return nil, result.Delete, nil
-	}
-
-	if result.Selected == nil && dryRun {
-		return nil, nil, fmt.Errorf("no matching workspace exists and --dry-run forbids creating one")
-	}
-
-	return result.Selected, nil, nil
-}
-
-// runSelectionTUIWithBack runs the workspace selector with back support (dynamic mode).
-func runSelectionTUIWithBack(workspaces []provider.Workspace, target config.Target, dryRun bool) (*provider.Workspace, bool, *provider.Workspace, error) {
-	model := tui.NewSelectModel(workspaces, target, dryRun, true)
-	p := tea.NewProgram(model, tea.WithMouseCellMotion())
-	finalModel, err := p.Run()
-	if err != nil {
-		return nil, false, nil, err
-	}
-
-	result := finalModel.(tui.SelectModel).Result()
-	if result.Quit {
-		os.Exit(0)
-	}
-	if result.Back {
-		return nil, true, nil, nil
-	}
-	if result.Delete != nil {
-		return nil, false, result.Delete, nil
-	}
-
-	if result.Selected == nil && dryRun {
-		return nil, false, nil, fmt.Errorf("no matching workspace exists and --dry-run forbids creating one")
-	}
-
-	return result.Selected, false, nil, nil
-}
-
-func deleteWorkspaceWithSpinner(manager provider.Manager, name string) error {
-	return tui.RunWithSpinner("Deleting workspace "+name, func() error {
-		return manager.DeleteWorkspace(name)
-	})
-}
-
-func removeWorkspace(workspaces []provider.Workspace, name string) []provider.Workspace {
-	var result []provider.Workspace
-	for _, ws := range workspaces {
-		if ws.Name != name {
-			result = append(result, ws)
-		}
-	}
-	return result
-}
-
-func runWorkLabelTUI() (string, error) {
-	model := tui.NewWorkLabelModel()
-	p := tea.NewProgram(model)
-	finalModel, err := p.Run()
-	if err != nil {
-		return "", err
-	}
-
-	result := finalModel.(tui.WorkLabelModel).Result()
-	if result.Quit {
-		os.Exit(0)
-	}
-
-	return result.Label, nil
 }

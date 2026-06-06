@@ -85,4 +85,3 @@ func (d *Daemon) applyWorkspaceSSHOptions(providerName, workspaceName string) {
 		log.Printf("ssh options: refresh %s: %v", confPath, err)
 	}
 }
-

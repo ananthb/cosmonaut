@@ -41,7 +41,7 @@ func (m *CoderManager) EnsurePrereqs() error { return RequireCommand("coder") }
 func (m *CoderManager) EnsureAuth() error {
 	_, err := m.run("whoami", "-o", "json")
 	if err != nil {
-		return fmt.Errorf("Coder CLI is not authenticated. Run `coder login` first")
+		return fmt.Errorf("coder CLI is not authenticated; run `coder login` first")
 	}
 	return nil
 }
