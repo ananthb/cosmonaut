@@ -17,6 +17,7 @@ const (
 	viewList appletView = iota
 	viewDetail
 	viewSettings
+	viewCreate
 )
 
 func (v appletView) label() string {
@@ -27,6 +28,8 @@ func (v appletView) label() string {
 		return "Detail"
 	case viewSettings:
 		return "Settings"
+	case viewCreate:
+		return "Create"
 	}
 	return ""
 }
@@ -75,6 +78,7 @@ type AppletModel struct {
 	list     listModel
 	detail   detailModel
 	settings settingsModel
+	create   createModel
 
 	width  int
 	height int
@@ -182,6 +186,9 @@ func (m AppletModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd = m.list.Init()
 		case viewSettings:
 			cmd = m.settings.Init()
+		case viewCreate:
+			m.create = newCreateModel(m.data)
+			cmd = m.create.Init()
 		}
 		return m, cmd
 	}
@@ -195,6 +202,8 @@ func (m AppletModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detail, cmd = m.detail.update(msg, m.data)
 	case viewSettings:
 		m.settings, cmd = m.settings.update(msg, m.data)
+	case viewCreate:
+		m.create, cmd = m.create.update(msg, m.data)
 	}
 	return m, cmd
 }
@@ -209,6 +218,8 @@ func (m AppletModel) View() string {
 		body = m.detail.view(m.data, m.width, m.height-headerLines-footerLines)
 	case viewSettings:
 		body = m.settings.view(m.data, m.width, m.height-headerLines-footerLines)
+	case viewCreate:
+		body = m.create.view(m.data, m.width, m.height-headerLines-footerLines)
 	}
 	footer := m.renderFooter()
 	return strings.Join([]string{header, body, footer}, "\n")

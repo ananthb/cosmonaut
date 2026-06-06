@@ -339,7 +339,6 @@ type SelectResult struct {
 type SelectModel struct {
 	workspaces     []provider.Workspace
 	target         config.Target
-	dryRun         bool
 	allowBack      bool // whether esc means "back" instead of "quit"
 	cursor         int
 	recommendedIdx int // -1 if none
@@ -354,7 +353,7 @@ type SelectModel struct {
 
 // NewSelectModel creates a selection model.
 // If allowBack is true, esc/backspace signals "go back" instead of quit.
-func NewSelectModel(workspaces []provider.Workspace, target config.Target, dryRun, allowBack bool) SelectModel {
+func NewSelectModel(workspaces []provider.Workspace, target config.Target, allowBack bool) SelectModel {
 	matches := provider.FindMatching(workspaces, &target)
 	recommended := -1
 	if len(matches) == 1 {
@@ -369,7 +368,6 @@ func NewSelectModel(workspaces []provider.Workspace, target config.Target, dryRu
 	return SelectModel{
 		workspaces:     workspaces,
 		target:         target,
-		dryRun:         dryRun,
 		allowBack:      allowBack,
 		cursor:         0,
 		recommendedIdx: recommended,
@@ -533,9 +531,6 @@ func (m SelectModel) View() string {
 	}
 	num := fmt.Sprintf("%d. ", createIdx+1)
 	label := "create a new workspace"
-	if m.dryRun {
-		label += " (disabled by --dry-run)"
-	}
 	if m.cursor == createIdx {
 		fmt.Fprintf(&b, "%s%s%s\n", cursor, selectedStyle.Render(num), selectedStyle.Render(label))
 	} else {

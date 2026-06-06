@@ -11,7 +11,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -62,8 +61,6 @@ func isAppBundle() bool {
 func rootCmd() *cobra.Command {
 	var (
 		configPath    string
-		noOpen        bool
-		dryRun        bool
 		codespaceName string
 		editorFlag    string
 		controlMaster bool
@@ -92,13 +89,11 @@ and ` + "`doctor`" + ` for environment checks.`,
 				v := controlMaster
 				cmOverride = &v
 			}
-			return run(configPath, targetName, codespaceName, editorFlag, noOpen, dryRun, cmOverride)
+			return run(configPath, targetName, codespaceName, editorFlag, cmOverride)
 		},
 	}
 
 	cmd.PersistentFlags().StringVar(&configPath, "config", defaultConfigPath, "config file path")
-	cmd.Flags().BoolVar(&noOpen, "no-open", false, "prepare SSH config and print target; don't launch the editor")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "don't create a workspace or launch the editor")
 	cmd.Flags().StringVar(&codespaceName, "codespace", "", "launch this codespace, skipping selection")
 	cmd.Flags().StringVar(&editorFlag, "editor", "", "zed (default) or neovim")
 	cmd.Flags().BoolVar(&controlMaster, "control-master", true, "use SSH ControlMaster multiplexing for instant reconnects")
@@ -141,7 +136,7 @@ func completeTargets(configPath *string) func(*cobra.Command, []string, string) 
 	}
 }
 
-func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRun bool, controlMasterOverride *bool) error {
+func run(configPath, targetName, codespaceName, editorFlag string, controlMasterOverride *bool) error {
 	absConfigPath, err := filepath.Abs(configPath)
 	if err != nil {
 		return err
@@ -154,11 +149,12 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 
 	interactive := term.IsTerminal(int(os.Stdin.Fd()))
 
-	// Bare `cosmonaut` with no target, no --codespace, and no overrides
-	// that imply a direct launch (--dry-run, --no-open) drops the user
-	// straight into the persistent TUI applet. Same destination as
-	// `cosmonaut tui` — saves typing the subcommand for the common case.
-	if interactive && targetName == "" && codespaceName == "" && cfg.DefaultTarget == "" && !dryRun && !noOpen && editorFlag == "" {
+	// Bare `cosmonaut` with no target, no --codespace, and no --editor
+	// override drops the user straight into the persistent TUI applet.
+	// Same destination as `cosmonaut tui` — saves typing the subcommand
+	// for the common case. Scripts that need a one-shot resolution pass
+	// a target name or --codespace and follow the existing launch path.
+	if interactive && targetName == "" && codespaceName == "" && cfg.DefaultTarget == "" && editorFlag == "" {
 		data := tui.NewAppletData(cfg, absConfigPath)
 		return tui.RunApplet(data)
 	}
@@ -244,7 +240,7 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 			}
 			target = config.Target{WorkspacePath: guessWorkspacePath(target, nil)}
 			resolvedTargetName = allWorkspaces[0].Name
-			sel, del, selErr := runSelectionTUI(allWorkspaces, target, dryRun)
+			sel, del, selErr := runSelectionTUI(allWorkspaces, target)
 			if selErr != nil {
 				return selErr
 			}
@@ -296,7 +292,7 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 					break
 				}
 
-				sel, back, del, err := runSelectionTUIWithBack(repoWorkspaces, target, dryRun)
+				sel, back, del, err := runSelectionTUIWithBack(repoWorkspaces, target)
 				if err != nil {
 					return err
 				}
@@ -343,7 +339,7 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 			} else if interactive {
 				for {
 					if allowBack {
-						sel, back, del, selErr := runSelectionTUIWithBack(workspaces, target, dryRun)
+						sel, back, del, selErr := runSelectionTUIWithBack(workspaces, target)
 						if selErr != nil {
 							return selErr
 						}
@@ -364,7 +360,7 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 						selected = sel
 						break
 					} else {
-						sel, del, selErr := runSelectionTUI(workspaces, target, dryRun)
+						sel, del, selErr := runSelectionTUI(workspaces, target)
 						if selErr != nil {
 							return selErr
 						}
@@ -430,7 +426,7 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 					break
 				}
 
-				sel, back, del, selErr := runSelectionTUIWithBack(repoWorkspaces, target, dryRun)
+				sel, back, del, selErr := runSelectionTUIWithBack(repoWorkspaces, target)
 				if selErr != nil {
 					return selErr
 				}
@@ -458,10 +454,6 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 
 	// Create workspace if needed.
 	if selected == nil {
-		if dryRun {
-			return fmt.Errorf("no matching workspace exists and --dry-run forbids creating one")
-		}
-
 		createTarget := target
 		if interactive && manager.Name() == provider.NameGitHub {
 			workLabel, err := runWorkLabelTUI()
@@ -517,22 +509,7 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 			if interactive {
 				tui.Status("⚡", fmt.Sprintf("Workspace already running, opening %s", ed.Name()))
 			}
-			if !dryRun && !noOpen {
-				return ed.LaunchRemote(alias, workspacePath)
-			}
-			if dryRun || noOpen {
-				remoteURL := fmt.Sprintf("ssh://%s/%s", alias, strings.TrimLeft(workspacePath, "/"))
-				output := map[string]string{
-					"target":    resolvedTargetName,
-					"workspace": selected.Name,
-					"provider":  selected.Provider,
-					"sshAlias":  alias,
-					"remoteUrl": remoteURL,
-				}
-				enc := json.NewEncoder(os.Stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(output)
-			}
+			return ed.LaunchRemote(alias, workspacePath)
 		}
 	}
 
@@ -581,21 +558,6 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 
 	if interactive {
 		tui.Status("✓", "SSH and editor config updated")
-	}
-
-	if dryRun || noOpen {
-		remoteURL := fmt.Sprintf("ssh://%s/%s", sshAlias, strings.TrimLeft(workspacePath, "/"))
-		output := map[string]string{
-			"target":    resolvedTargetName,
-			"workspace": selected.Name,
-			"provider":  selected.Provider,
-			"sshAlias":  sshAlias,
-			"remoteUrl": remoteURL,
-			"editor":    ed.Name(),
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(output)
 	}
 
 	// Launch editor.
@@ -716,8 +678,8 @@ func targetForRepo(cfg *config.Config, repo, _ string) (config.Target, string) {
 }
 
 // runSelectionTUI runs the workspace selector without back support (static target mode).
-func runSelectionTUI(workspaces []provider.Workspace, target config.Target, dryRun bool) (*provider.Workspace, *provider.Workspace, error) {
-	model := tui.NewSelectModel(workspaces, target, dryRun, false)
+func runSelectionTUI(workspaces []provider.Workspace, target config.Target) (*provider.Workspace, *provider.Workspace, error) {
+	model := tui.NewSelectModel(workspaces, target, false)
 	p := tea.NewProgram(model, tea.WithMouseCellMotion())
 	finalModel, err := p.Run()
 	if err != nil {
@@ -731,17 +693,12 @@ func runSelectionTUI(workspaces []provider.Workspace, target config.Target, dryR
 	if result.Delete != nil {
 		return nil, result.Delete, nil
 	}
-
-	if result.Selected == nil && dryRun {
-		return nil, nil, fmt.Errorf("no matching workspace exists and --dry-run forbids creating one")
-	}
-
 	return result.Selected, nil, nil
 }
 
 // runSelectionTUIWithBack runs the workspace selector with back support (dynamic mode).
-func runSelectionTUIWithBack(workspaces []provider.Workspace, target config.Target, dryRun bool) (*provider.Workspace, bool, *provider.Workspace, error) {
-	model := tui.NewSelectModel(workspaces, target, dryRun, true)
+func runSelectionTUIWithBack(workspaces []provider.Workspace, target config.Target) (*provider.Workspace, bool, *provider.Workspace, error) {
+	model := tui.NewSelectModel(workspaces, target, true)
 	p := tea.NewProgram(model, tea.WithMouseCellMotion())
 	finalModel, err := p.Run()
 	if err != nil {
@@ -758,11 +715,6 @@ func runSelectionTUIWithBack(workspaces []provider.Workspace, target config.Targ
 	if result.Delete != nil {
 		return nil, false, result.Delete, nil
 	}
-
-	if result.Selected == nil && dryRun {
-		return nil, false, nil, fmt.Errorf("no matching workspace exists and --dry-run forbids creating one")
-	}
-
 	return result.Selected, false, nil, nil
 }
 

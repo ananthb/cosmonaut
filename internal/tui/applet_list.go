@@ -113,6 +113,12 @@ func (m listModel) handleKey(msg tea.KeyMsg, d *AppletData) (listModel, tea.Cmd)
 		}
 		m.filter += key
 		m.applyFilter()
+	case "n":
+		if m.filter == "" {
+			return m, switchTo(viewCreate, nil)
+		}
+		m.filter += key
+		m.applyFilter()
 	case "r":
 		if m.filter == "" {
 			return m, func() tea.Msg { return pollDoneMsg{result: d.Poll()} }
@@ -355,7 +361,7 @@ func (m listModel) view(d *AppletData, width, height int) string {
 	}
 
 	b.WriteString("\n")
-	hint := "enter open  d delete  r refresh  s settings  type to filter  q quit"
+	hint := "enter open  n new  d delete  r refresh  s settings  type to filter  q quit"
 	b.WriteString(dimStyle.Render(hint))
 
 	return clampHeight(b.String(), height, width)
