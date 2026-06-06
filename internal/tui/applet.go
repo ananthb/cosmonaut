@@ -59,9 +59,14 @@ const flashTTL = 4 * time.Second
 
 // switchViewMsg requests a view change. Sub-views emit it to navigate (e.g.
 // list emits switchViewMsg{viewDetail, ws} when the user presses Enter).
+// When reset is true and view is viewCreate, the create model is rebuilt
+// from scratch — used for the bare-target picker entry point. Otherwise an
+// in-progress create form is preserved across switches so the user doesn't
+// lose typed input by tabbing away and back.
 type switchViewMsg struct {
 	view      appletView
 	workspace *provider.Workspace
+	reset     bool
 }
 
 // reloadMsg asks the foreground view to rebuild itself from current data.
@@ -160,7 +165,9 @@ func (m AppletModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detail = detailM
 		settingsM, c3 := m.settings.update(msg, m.data)
 		m.settings = settingsM
-		return m, tea.Batch(c1, c2, c3)
+		createM, c4 := m.create.update(msg, m.data)
+		m.create = createM
+		return m, tea.Batch(c1, c2, c3, c4)
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -218,7 +225,17 @@ func (m AppletModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case viewSettings:
 			cmd = m.settings.Init()
 		case viewCreate:
-			m.create = newCreateModel(m.data)
+			// Preserve an in-progress create form across view switches.
+			// Only rebuild when the caller explicitly asks for a fresh
+			// model (reset) or when no form has been instantiated yet.
+			if msg.reset || !m.create.active {
+				m.create = newCreateModel(m.data)
+			}
+			// Switching to viewCreate is a deliberate user action, so the
+			// form is "in progress" from this moment on — even if no input
+			// has been typed yet. This keeps the Create tab visible in the
+			// header and ensures the form survives a round trip away.
+			m.create.active = true
 			cmd = m.create.Init()
 		}
 		return m, cmd
@@ -265,10 +282,14 @@ const (
 
 func (m AppletModel) renderHeader() string {
 	tabs := []string{}
-	for _, v := range []appletView{viewList, viewDetail, viewSettings} {
+	for _, v := range []appletView{viewList, viewDetail, viewCreate, viewSettings} {
 		label := v.label()
 		if v == viewDetail && m.detail.workspace.Name == "" {
 			// Don't show Detail tab when no workspace is selected.
+			continue
+		}
+		if v == viewCreate && !m.create.active {
+			// Don't show Create tab unless a form is in progress.
 			continue
 		}
 		if v == m.view {
@@ -294,36 +315,48 @@ func (m AppletModel) renderFooter() string {
 	return "\n" + dimStyle.Render(" ")
 }
 
+// cycleView advances through the visible tabs in order. The natural
+// rotation is List → Detail → Create → Settings → List, skipping Detail
+// when no workspace is selected and Create when no form is in progress.
 func (m AppletModel) cycleView() AppletModel {
-	switch m.view {
-	case viewList:
-		if m.detail.workspace.Name != "" {
-			m.view = viewDetail
-		} else {
-			m.view = viewSettings
+	order := m.visibleViews()
+	for i, v := range order {
+		if v == m.view {
+			m.view = order[(i+1)%len(order)]
+			return m
 		}
-	case viewDetail:
-		m.view = viewSettings
-	case viewSettings:
-		m.view = viewList
 	}
+	// Current view isn't in the visible set (e.g. tabbed away from a
+	// dismissed create form). Fall back to the list.
+	m.view = viewList
 	return m
 }
 
+// cycleViewBack walks the same rotation in reverse.
 func (m AppletModel) cycleViewBack() AppletModel {
-	switch m.view {
-	case viewList:
-		m.view = viewSettings
-	case viewSettings:
-		if m.detail.workspace.Name != "" {
-			m.view = viewDetail
-		} else {
-			m.view = viewList
+	order := m.visibleViews()
+	for i, v := range order {
+		if v == m.view {
+			m.view = order[(i-1+len(order))%len(order)]
+			return m
 		}
-	case viewDetail:
-		m.view = viewList
 	}
+	m.view = viewList
 	return m
+}
+
+// visibleViews returns the views currently eligible for the tab rotation,
+// in display order. Detail and Create are conditionally present.
+func (m AppletModel) visibleViews() []appletView {
+	out := []appletView{viewList}
+	if m.detail.workspace.Name != "" {
+		out = append(out, viewDetail)
+	}
+	if m.create.active {
+		out = append(out, viewCreate)
+	}
+	out = append(out, viewSettings)
+	return out
 }
 
 func (m AppletModel) activeInit() tea.Cmd {
@@ -334,6 +367,8 @@ func (m AppletModel) activeInit() tea.Cmd {
 		return m.detail.Init()
 	case viewSettings:
 		return m.settings.Init()
+	case viewCreate:
+		return m.create.Init()
 	}
 	return nil
 }
@@ -403,9 +438,19 @@ func emitFlash(text string, isErr bool) tea.Cmd {
 	}
 }
 
-// switchTo returns a tea.Cmd that navigates to a different view.
+// switchTo returns a tea.Cmd that navigates to a different view, preserving
+// any in-progress sub-view state (notably the Create form).
 func switchTo(v appletView, ws *provider.Workspace) tea.Cmd {
 	return func() tea.Msg {
 		return switchViewMsg{view: v, workspace: ws}
+	}
+}
+
+// switchToFresh is like switchTo but forces the target view to be rebuilt
+// from a clean state. Use it for the "start a new create" entry point so
+// stale input doesn't bleed into a deliberately-new form.
+func switchToFresh(v appletView, ws *provider.Workspace) tea.Cmd {
+	return func() tea.Msg {
+		return switchViewMsg{view: v, workspace: ws, reset: true}
 	}
 }

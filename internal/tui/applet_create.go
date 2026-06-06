@@ -53,6 +53,13 @@ type createModel struct {
 	focus      createField
 	submitting bool
 	spinner    spinner.Model
+
+	// active is true once the form has meaningful state — either seeded
+	// at construction or after the user has typed into a field. It gates
+	// whether the Create tab participates in the tab rotation, and the
+	// applet uses it to decide whether to preserve the model across view
+	// switches.
+	active bool
 }
 
 func newCreateModel(d *AppletData) createModel {
@@ -126,6 +133,10 @@ func newCreateModelWithSeed(d *AppletData, seed AppletCreateSeed) createModel {
 		m.focus = focusLabelOrName
 	}
 	m.applyFocus()
+	// A seeded form already carries user-intent state, so mark it active
+	// from the start — that way the Create tab is visible on first paint
+	// and tabbing away/back doesn't wipe the seed.
+	m.active = true
 	return m
 }
 
@@ -172,6 +183,10 @@ func (m createModel) update(msg tea.Msg, d *AppletData) (createModel, tea.Cmd) {
 		if msg.err != nil {
 			return m, emitFlash("create: "+msg.err.Error(), true)
 		}
+		// Successful create: the form is no longer "in progress", so drop
+		// the active flag and wipe inputs. The applet will rebuild a fresh
+		// model on the next switchToFresh(viewCreate, ...).
+		m = m.clear()
 		// Switch to detail for the new workspace + force a poll so the
 		// list catches up.
 		ws := msg.workspace
@@ -200,6 +215,10 @@ func (m createModel) update(msg tea.Msg, d *AppletData) (createModel, tea.Cmd) {
 func (m createModel) handleKey(msg tea.KeyMsg, d *AppletData) (createModel, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
+		// Cancel is a deliberate abandonment of the form, so drop the
+		// in-progress state — the tab disappears from the header and the
+		// next "n" / seeded entry starts clean.
+		m = m.clear()
 		return m, switchTo(viewList, nil)
 	case "tab":
 		m = m.cycleFocus(1)
@@ -230,6 +249,7 @@ func (m createModel) handleKey(msg tea.KeyMsg, d *AppletData) (createModel, tea.
 		}
 	case "enter":
 		if m.focus == focusCancel {
+			m = m.clear()
 			return m, switchTo(viewList, nil)
 		}
 		if m.focus == focusSubmit || m.focus == focusLabelOrName || (m.providerName == provider.NameCoder && m.focus == focusRepoOrTemplate) {
@@ -258,7 +278,32 @@ func (m createModel) routeInput(msg tea.Msg) (createModel, tea.Cmd) {
 			m.nameInput, cmd = m.nameInput.Update(msg)
 		}
 	}
+	// If anything has been typed, the form is now "in progress" and should
+	// survive view switches.
+	if m.hasInput() {
+		m.active = true
+	}
 	return m, cmd
+}
+
+// hasInput reports whether the user has typed anything the model would care
+// about preserving — used to flip the active flag once the form is no
+// longer pristine.
+func (m createModel) hasInput() bool {
+	return strings.TrimSpace(m.repoInput.Value()) != "" ||
+		strings.TrimSpace(m.labelInput.Value()) != "" ||
+		strings.TrimSpace(m.nameInput.Value()) != ""
+}
+
+// clear drops the in-progress flag and wipes the text inputs, returning the
+// updated model. Used when the user abandons or successfully submits the
+// form — both signals that the next entry into Create should start fresh.
+func (m createModel) clear() createModel {
+	m.active = false
+	m.repoInput.SetValue("")
+	m.labelInput.SetValue("")
+	m.nameInput.SetValue("")
+	return m
 }
 
 func (m createModel) cycleFocus(delta int) createModel {
