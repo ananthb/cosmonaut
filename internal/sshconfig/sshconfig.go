@@ -11,8 +11,10 @@ import (
 	"strings"
 )
 
-const SSHIncludeLine = "Include ~/.ssh/cosmonaut/*.conf"
-const coderConfigFile = "coder.conf"
+const (
+	SSHIncludeLine  = "Include ~/.ssh/cosmonaut/*.conf"
+	coderConfigFile = "coder.conf"
+)
 
 // HostStarScopedLine is the form a bare `Host *` is rewritten to when the
 // user accepts the scoping fix. The negation patterns prevent the
@@ -108,10 +110,10 @@ func EnsureConfigIncludesGenerated(mainConfigPath string) error {
 
 	updated := EnsureIncludeLine(currentStr)
 	dir := filepath.Dir(mainConfigPath)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(mainConfigPath, []byte(updated), 0644)
+	return os.WriteFile(mainConfigPath, []byte(updated), 0o644)
 }
 
 func EnsureMainConfigIncludesGenerated(mainConfigPath string) error {
@@ -153,11 +155,11 @@ func ScopeHostStarBlocks(mainConfigPath string) (bool, error) {
 	}
 	backup := mainConfigPath + MainConfigBackupSuffix
 	if _, err := os.Stat(backup); os.IsNotExist(err) {
-		if err := os.WriteFile(backup, data, 0644); err != nil {
+		if err := os.WriteFile(backup, data, 0o644); err != nil {
 			return false, fmt.Errorf("backup %s: %w", backup, err)
 		}
 	}
-	return true, os.WriteFile(mainConfigPath, []byte(updated), 0644)
+	return true, os.WriteFile(mainConfigPath, []byte(updated), 0o644)
 }
 
 // ReadExistingAlias reads the SSH alias from an existing codespace config file.
@@ -317,25 +319,25 @@ func indexAtLineStart(content, substr string) int {
 // WriteCodespaceConfig writes the SSH config for a codespace, replacing
 // any prior cosmonaut-managed tail with one built from opts.
 func WriteCodespaceConfig(includeDir, codespaceName, content string, opts ManagedExtrasOptions) error {
-	if err := os.MkdirAll(includeDir, 0700); err != nil {
+	if err := os.MkdirAll(includeDir, 0o700); err != nil {
 		return err
 	}
 	content = applyManagedExtras(content, opts)
 	path := filepath.Join(includeDir, codespaceName+".conf")
-	return os.WriteFile(path, []byte(content), 0644)
+	return os.WriteFile(path, []byte(content), 0o644)
 }
 
 func WriteWorkspaceConfig(includeDir, provider, workspaceName, content string, opts ManagedExtrasOptions) error {
-	if err := os.MkdirAll(includeDir, 0700); err != nil {
+	if err := os.MkdirAll(includeDir, 0o700); err != nil {
 		return err
 	}
 	content = applyManagedExtras(content, opts)
 	path := SSHPaths{IncludeDir: includeDir}.WorkspaceConfigPath(provider, workspaceName)
-	return os.WriteFile(path, []byte(content), 0644)
+	return os.WriteFile(path, []byte(content), 0o644)
 }
 
 func EnsureWorkspaceConfig(paths SSHPaths, provider, workspaceName, content string, opts ManagedExtrasOptions) error {
-	if err := os.MkdirAll(paths.IncludeDir, 0700); err != nil {
+	if err := os.MkdirAll(paths.IncludeDir, 0o700); err != nil {
 		return err
 	}
 	if err := EnsureConfigIncludesGenerated(paths.MainConfigPath); err != nil {
@@ -359,7 +361,7 @@ func RefreshManagedExtras(path string, opts ManagedExtrasOptions) (bool, error) 
 	if updated == string(data) {
 		return false, nil
 	}
-	return true, os.WriteFile(path, []byte(updated), 0644)
+	return true, os.WriteFile(path, []byte(updated), 0o644)
 }
 
 // RefreshAllManagedExtras walks includeDir and refreshes the managed block

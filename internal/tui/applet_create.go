@@ -38,8 +38,8 @@ type createDoneMsg struct {
 // GitHub it asks for repo + optional work label; for Coder it asks the
 // user to pick a configured template target and pick a workspace name.
 type createModel struct {
-	providerName  string // current selection — "github" or "coder"
-	providerLock  bool   // true when only one provider is configured
+	providerName string // current selection — "github" or "coder"
+	providerLock bool   // true when only one provider is configured
 
 	// GitHub fields
 	repoInput  textinput.Model
@@ -50,7 +50,7 @@ type createModel struct {
 	coderIdx     int
 	nameInput    textinput.Model
 
-	focus     createField
+	focus      createField
 	submitting bool
 	spinner    spinner.Model
 }
@@ -108,6 +108,24 @@ func newCreateModel(d *AppletData) createModel {
 		m.providerLock = true
 	}
 	m.focusInitial()
+	return m
+}
+
+// newCreateModelWithSeed is the AppletInitial pathway: builds a Create
+// view pre-filled with the provider + repository the root command
+// resolved. The first focus lands on the work-label / workspace-name
+// field so the user only has to type the optional details.
+func newCreateModelWithSeed(d *AppletData, seed AppletCreateSeed) createModel {
+	m := newCreateModel(d)
+	switch seed.Provider {
+	case provider.NameCoder, provider.NameGitHub:
+		m.providerName = seed.Provider
+	}
+	if seed.Repository != "" && m.providerName == provider.NameGitHub {
+		m.repoInput.SetValue(seed.Repository)
+		m.focus = focusLabelOrName
+	}
+	m.applyFocus()
 	return m
 }
 

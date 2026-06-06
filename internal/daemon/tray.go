@@ -85,7 +85,6 @@ func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 	}
 
 	for _, repo := range repos {
-		repo := repo
 		args := d.targetNameForRepo(repo)
 		if args == "" {
 			args = repo
@@ -171,7 +170,6 @@ func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {
 		return item
 	}
 	for _, ws := range workspaces {
-		ws := ws
 		label := fmt.Sprintf("%s %s", stateIcon(ws.State), ws.Name)
 		item := fyne.NewMenuItem(label, func() {
 			_, resolvedName := guiTargetForCoderWorkspace(d.Cfg, ws)
@@ -226,18 +224,13 @@ func (d *Daemon) coderWorkspaceActionsMenu(ws provider.Workspace) *fyne.Menu {
 		items = append(items, disabledMenuItem("No configured ports"))
 	} else {
 		for _, pf := range target.Coder.PortForwards {
-			pf := pf
-			remotePort := pf.RemotePort
-			localPort := pf.LocalPort
-			if localPort == 0 {
-				localPort = remotePort
-			}
 			item := fyne.NewMenuItem("Port "+coderPortForwardLabel(pf), nil)
 			item.ChildMenu = d.coderPortActionsMenu(ws.Name, pf)
 			items = append(items, item)
 		}
 	}
-	items = append(items,
+	items = append(
+		items,
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Forward port...", func() {
 			go d.showGUI("--port-forward", "--workspace", ws.Name, "--provider", provider.NameCoder, resolvedName)
@@ -349,14 +342,14 @@ func (d *Daemon) codespaceActionsMenu(cs codespace.Codespace, launchArgs string)
 		items = append(items, disabledMenuItem("No forwarded ports"))
 	default:
 		for _, port := range entry.Ports {
-			port := port
 			item := fyne.NewMenuItem("Port "+codespace.PortLabel(port), nil)
 			item.ChildMenu = d.portActionsMenu(cs.Name, port)
 			items = append(items, item)
 		}
 	}
 
-	items = append(items,
+	items = append(
+		items,
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Refresh ports", func() {
 			d.refreshPortsAsync(cs.Name, nil)

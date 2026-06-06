@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/linuskendall/cosmonaut/internal/codespace"
@@ -27,13 +28,13 @@ const (
 )
 
 // settingsModel mirrors the GUI's Preferences page: health checks (with
-// inline fix), GitHub auth, editor select, daemon options, default-target
+// inline fix), GitHub auth, editor entry, daemon options, default-target
 // options, and an "edit config file" action.
 type settingsModel struct {
 	section settingsSection
 
 	healthCursor int
-	editorIdx    int
+	editorInput  textinput.Model
 	daemonField  int // 0=hotkeyAction, 1=inhibitSleep
 	daemonHotkey int
 	daemonSleep  int
@@ -44,13 +45,17 @@ type settingsModel struct {
 
 func newSettingsModel(d *AppletData) settingsModel {
 	m := settingsModel{}
+	ed := textinput.New()
+	ed.Placeholder = "zed (default)"
+	ed.CharLimit = 80
+	ed.Width = 40
+	m.editorInput = ed
 	m.syncFromConfig(d.Config())
 	return m
 }
 
 func (m *settingsModel) syncFromConfig(cfg *config.Config) {
-	editors := []string{"zed", "neovim"}
-	m.editorIdx = indexOf(editors, defaultStr(cfg.Editor, "zed"))
+	m.editorInput.SetValue(cfg.Editor)
 
 	hotkeyActions := []string{"picker", "previous", "default"}
 	sleepActions := []string{"off", "sleep", "sleep+shutdown"}
@@ -99,8 +104,40 @@ func (m settingsModel) update(msg tea.Msg, d *AppletData) (settingsModel, tea.Cm
 }
 
 func (m settingsModel) handleKey(msg tea.KeyMsg, d *AppletData) (settingsModel, tea.Cmd) {
-	cfg := d.Config()
-	switch msg.String() {
+	key := msg.String()
+
+	// secEditor is a text input — most keys go to the textinput model so
+	// the user can type freely. Navigation keys (tab/shift+tab/esc) still
+	// move focus, persisting the input value before they do.
+	if m.section == secEditor {
+		switch key {
+		case "esc":
+			d.Config().Editor = strings.TrimSpace(m.editorInput.Value())
+			cmd := m.persistAndAck(d)
+			return m, tea.Batch(cmd, switchTo(viewList, nil))
+		case "tab":
+			d.Config().Editor = strings.TrimSpace(m.editorInput.Value())
+			cmd := m.persistAndAck(d)
+			m.section = (m.section + 1) % 6
+			m.editorInput.Blur()
+			return m, cmd
+		case "shift+tab":
+			d.Config().Editor = strings.TrimSpace(m.editorInput.Value())
+			cmd := m.persistAndAck(d)
+			m.section = (m.section + 5) % 6
+			m.editorInput.Blur()
+			return m, cmd
+		default:
+			if !m.editorInput.Focused() {
+				m.editorInput.Focus()
+			}
+			var cmd tea.Cmd
+			m.editorInput, cmd = m.editorInput.Update(msg)
+			return m, cmd
+		}
+	}
+
+	switch key {
 	case "esc":
 		return m, switchTo(viewList, nil)
 	case "tab":
@@ -122,7 +159,6 @@ func (m settingsModel) handleKey(msg tea.KeyMsg, d *AppletData) (settingsModel, 
 	case "enter", " ":
 		return m.activate(d)
 	}
-	_ = cfg
 	return m, nil
 }
 
@@ -148,9 +184,7 @@ func (m settingsModel) moveCursor(delta int, d *AppletData) settingsModel {
 func (m settingsModel) cycleValue(delta int, d *AppletData) settingsModel {
 	switch m.section {
 	case secEditor:
-		editors := []string{"zed", "neovim"}
-		m.editorIdx = wrapDetail(m.editorIdx+delta, len(editors))
-		d.Config().Editor = editors[m.editorIdx]
+		// Editor is a free-text field — left/right has no enum to cycle.
 	case secDaemon:
 		if d.Config().Daemon == nil {
 			d.Config().Daemon = &config.DaemonConfig{}
@@ -336,15 +370,10 @@ func (m settingsModel) renderAuth(d *AppletData) string {
 	return fmt.Sprintf("%s\n  GitHub: %s  %s", header, state, dimStyle.Render(hint))
 }
 
-func (m settingsModel) renderEditor(d *AppletData) string {
-	editors := []string{"zed", "neovim"}
-	cur := editors[m.editorIdx]
+func (m settingsModel) renderEditor(_ *AppletData) string {
 	header := m.sectionHeader("EDITOR", secEditor)
-	value := cur
-	if m.section == secEditor {
-		value = selectedStyle.Render("‹ " + cur + " ›")
-	}
-	return fmt.Sprintf("%s\n  %s", header, value)
+	return fmt.Sprintf("%s\n  %s\n  %s", header, m.editorInput.View(),
+		dimStyle.Render("any binary on PATH; empty = zed default"))
 }
 
 func (m settingsModel) renderDaemon(d *AppletData) string {

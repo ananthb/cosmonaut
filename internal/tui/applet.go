@@ -86,19 +86,50 @@ type AppletModel struct {
 	flash    string
 	flashErr bool
 	flashSeq int
+}
 
-	err error
+// AppletInitial lets callers (notably the root `cosmonaut <target>`
+// flow) seed the applet's initial state — pre-filter the list to a
+// repo, or jump straight to the Create view with a repo filled in.
+// Zero value means "open the list view, no filter."
+type AppletInitial struct {
+	// Filter pre-populates the list view's filter-as-you-type buffer.
+	// Useful when the user typed `cosmonaut <target>` and multiple
+	// workspaces matched — we open the applet narrowed to those.
+	Filter string
+	// Create, if non-nil, opens directly on the Create view with these
+	// fields pre-filled. Useful when `cosmonaut <target>` finds no
+	// existing workspace and the user wanted one created.
+	Create *AppletCreateSeed
+}
+
+// AppletCreateSeed seeds the Create view with a chosen provider and an
+// initial repository (GitHub) or workspace name (Coder).
+type AppletCreateSeed struct {
+	Provider   string
+	Repository string
 }
 
 // NewAppletModel constructs the top-level model. Pass the shared data
 // layer; the model will trigger an initial poll on Init.
-func NewAppletModel(data *AppletData) AppletModel {
+func NewAppletModel(data *AppletData, initial ...AppletInitial) AppletModel {
 	m := AppletModel{
 		data: data,
 		view: viewList,
 	}
 	m.list = newListModel(data)
 	m.settings = newSettingsModel(data)
+
+	if len(initial) > 0 {
+		ini := initial[0]
+		if ini.Filter != "" {
+			m.list.setFilter(ini.Filter)
+		}
+		if ini.Create != nil {
+			m.create = newCreateModelWithSeed(data, *ini.Create)
+			m.view = viewCreate
+		}
+	}
 	return m
 }
 
@@ -356,9 +387,10 @@ func stateIconChar(state string) string {
 }
 
 // RunApplet starts the persistent TUI applet using the given data layer.
-// Blocks until the user quits.
-func RunApplet(data *AppletData) error {
-	model := NewAppletModel(data)
+// Pass an optional AppletInitial to pre-seed the view (filter, create
+// pre-fill). Blocks until the user quits.
+func RunApplet(data *AppletData, initial ...AppletInitial) error {
+	model := NewAppletModel(data, initial...)
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
@@ -377,4 +409,3 @@ func switchTo(v appletView, ws *provider.Workspace) tea.Cmd {
 		return switchViewMsg{view: v, workspace: ws}
 	}
 }
-

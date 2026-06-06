@@ -17,6 +17,7 @@ package daemon
 
 import (
 	"fmt"
+	"image/color"
 	"log"
 	"net/url"
 	"os/exec"
@@ -32,8 +33,6 @@ import (
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-
-	"image/color"
 
 	"github.com/linuskendall/cosmonaut/internal/codespace"
 	"github.com/linuskendall/cosmonaut/internal/config"
@@ -373,10 +372,12 @@ func (uw *unifiedWindow) showCosmoCodespaceDetail(csName, repo string) {
 
 	// ── ACTIONS
 	selectedEditor := uw.daemon.getEditor().Name()
-	editorSel := widget.NewSelect([]string{"zed", "neovim"}, func(val string) {
+	editorEntry := widget.NewEntry()
+	editorEntry.SetPlaceHolder("zed (default)")
+	editorEntry.SetText(selectedEditor)
+	editorEntry.OnChanged = func(val string) {
 		selectedEditor = val
-	})
-	editorSel.Selected = selectedEditor
+	}
 
 	openBtn := primaryButton("Open", func() {
 		origEditor := uw.daemon.Cfg.Editor
@@ -422,7 +423,7 @@ func (uw *unifiedWindow) showCosmoCodespaceDetail(csName, repo string) {
 		deleteBtn.Disable()
 	}
 
-	actions := container.NewHBox(openBtn, editorSel, sshBtn, layout.NewSpacer(), deleteBtn)
+	actions := container.NewHBox(openBtn, editorEntry, sshBtn, layout.NewSpacer(), deleteBtn)
 
 	sshSection := uw.buildWorkspaceSSHSection(provider.NameGitHub, cs.Name, func() {
 		uw.showCosmoCodespaceDetail(csName, repo)
@@ -737,10 +738,12 @@ func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
 	subtitle.TextStyle = fyne.TextStyle{Monospace: true}
 
 	selectedEditor := uw.daemon.getEditor().Name()
-	editorSel := widget.NewSelect([]string{"zed", "neovim"}, func(val string) {
+	editorEntry := widget.NewEntry()
+	editorEntry.SetPlaceHolder("zed (default)")
+	editorEntry.SetText(selectedEditor)
+	editorEntry.OnChanged = func(val string) {
 		selectedEditor = val
-	})
-	editorSel.Selected = selectedEditor
+	}
 
 	openBtn := primaryButton("Open", func() {
 		origEditor := uw.daemon.Cfg.Editor
@@ -823,7 +826,7 @@ func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
 		heroTitle,
 		subtitle,
 		widget.NewSeparator(),
-		container.NewHBox(openBtn, editorSel, sshBtn, layout.NewSpacer(), refreshBtn, deleteBtn),
+		container.NewHBox(openBtn, editorEntry, sshBtn, layout.NewSpacer(), refreshBtn, deleteBtn),
 		widget.NewSeparator(),
 		info,
 		widget.NewSeparator(),
@@ -1356,12 +1359,16 @@ func openCommandInTerminal(shellCmd string) {
 activate
 do script "%s"
 end tell`, shellCmd)
-		exec.Command("osascript", "-e", script).Run()
+		if err := exec.Command("osascript", "-e", script).Run(); err != nil {
+			log.Printf("terminal: osascript: %v", err)
+		}
 		return
 	}
 	for _, term := range []string{"ghostty", "alacritty", "kitty", "gnome-terminal", "xterm"} {
 		if _, err := exec.LookPath(term); err == nil {
-			exec.Command(term, "-e", "sh", "-c", shellCmd).Run()
+			if err := exec.Command(term, "-e", "sh", "-c", shellCmd).Run(); err != nil {
+				log.Printf("terminal: %s: %v", term, err)
+			}
 			return
 		}
 	}

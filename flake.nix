@@ -249,6 +249,8 @@
             pkgs.gopls
             pkgs.gh
             pkgs.pkg-config
+            pkgs.golangci-lint
+            pkgs.gofumpt
             # goreleaser drives the user-facing release pipeline
             # (binary build, archives, DMG, signing, GitHub release).
             # See .goreleaser.darwin.yaml / .goreleaser.linux.yaml.

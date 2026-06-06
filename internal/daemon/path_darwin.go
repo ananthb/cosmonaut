@@ -67,7 +67,10 @@ func enrichPath() {
 
 	if len(extra) > 0 {
 		merged := current + ":" + strings.Join(extra, ":")
-		os.Setenv("PATH", merged)
+		if err := os.Setenv("PATH", merged); err != nil {
+			log.Printf("path: setenv PATH: %v", err)
+			return
+		}
 		log.Printf("path: added %d directories from %s", len(extra), shell)
 	}
 }

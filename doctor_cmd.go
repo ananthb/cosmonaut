@@ -66,21 +66,24 @@ func runDoctor(configPath string, applyFixes bool) error {
 	out := os.Stdout
 	failures := 0
 
+	printf := func(format string, args ...any) { _, _ = fmt.Fprintf(out, format, args...) }
+	println := func(args ...any) { _, _ = fmt.Fprintln(out, args...) }
 	for _, c := range checks {
 		issue := c.Status()
 		if issue == nil {
-			fmt.Fprintf(out, "  ok    %s\n", c.Title)
+			printf("  ok    %s\n", c.Title)
 			continue
 		}
 		failures++
-		fmt.Fprintf(out, "  fail  %s\n", c.Title)
-		fmt.Fprintf(out, "        %s\n", issue.Summary)
+		printf("  fail  %s\n", c.Title)
+		printf("        %s\n", issue.Summary)
 
 		if !applyFixes {
-			if c.HasInProcessFix() {
-				fmt.Fprintln(out, "        rerun with --fix to apply automatically")
-			} else if c.HasTerminalFix() {
-				fmt.Fprintf(out, "        run: %s\n", c.FixCommand())
+			switch {
+			case c.HasInProcessFix():
+				println("        rerun with --fix to apply automatically")
+			case c.HasTerminalFix():
+				printf("        run: %s\n", c.FixCommand())
 			}
 			continue
 		}
@@ -88,21 +91,21 @@ func runDoctor(configPath string, applyFixes bool) error {
 		switch {
 		case c.HasInProcessFix():
 			if err := c.Fix(); err != nil {
-				fmt.Fprintf(out, "        fix failed: %v\n", err)
+				printf("        fix failed: %v\n", err)
 			} else {
-				fmt.Fprintln(out, "        fix applied")
+				println("        fix applied")
 			}
 		case c.HasTerminalFix():
-			fmt.Fprintf(out, "        run: %s\n", c.FixCommand())
+			printf("        run: %s\n", c.FixCommand())
 		default:
-			fmt.Fprintln(out, "        no automatic fix available")
+			println("        no automatic fix available")
 		}
 	}
 
 	if failures == 0 {
-		fmt.Fprintln(out, "\nAll checks passed.")
+		println("\nAll checks passed.")
 		return nil
 	}
-	fmt.Fprintf(out, "\n%d check(s) need attention.\n", failures)
+	printf("\n%d check(s) need attention.\n", failures)
 	return nil
 }

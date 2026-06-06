@@ -194,11 +194,12 @@ func (d *Daemon) runLaunchFlow(win fyne.Window, target config.Target, resolvedNa
 			fyne.Do(func() { progress.setStatus(msg) })
 		}
 
-		// Record in history.
 		hist := history.Load()
 		if target.Repository != "" {
 			hist.Touch(target.Repository)
-			hist.Save()
+			if err := hist.Save(); err != nil {
+				log.Printf("history: save: %v", err)
+			}
 		}
 
 		workspacePath := guessWorkspacePath(target, selected)

@@ -14,7 +14,7 @@ import (
 type Config struct {
 	DefaultTarget     string            `json:"defaultTarget,omitempty"`
 	WorkspaceProvider string            `json:"workspaceProvider,omitempty"` // "github" (default) or "coder"
-	Editor            string            `json:"editor,omitempty"`            // "zed" (default) or "neovim"
+	Editor            string            `json:"editor,omitempty"`            // any binary on PATH; "" / "zed" / "zeditor" use the built-in Zed integration
 	Providers         ProviderConfigs   `json:"providers,omitempty"`
 	Targets           map[string]Target `json:"targets"`
 	Daemon            *DaemonConfig     `json:"daemon,omitempty"`
@@ -201,7 +201,7 @@ func SaveConfig(path string, cfg *Config) error {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0o644)
 }
 
 func (c *Config) EffectiveWorkspaceProvider() string {

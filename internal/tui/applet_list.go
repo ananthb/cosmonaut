@@ -34,12 +34,12 @@ const (
 // cursor navigation. Mirrors the GUI's sidebar tree but as a flat scrolling
 // list since terminal real-estate is single-pane.
 type listModel struct {
-	rows         []listRow
-	visible      []int // indices into rows after filter applied
-	cursor       int   // index within visible
-	filter       string
-	escPending   bool
-	escSeq       int
+	rows          []listRow
+	visible       []int // indices into rows after filter applied
+	cursor        int   // index within visible
+	filter        string
+	escPending    bool
+	escSeq        int
 	confirmDelete *provider.Workspace
 }
 
@@ -47,6 +47,14 @@ func newListModel(d *AppletData) listModel {
 	m := listModel{}
 	m.rebuild(d)
 	return m
+}
+
+// setFilter applies an initial filter string (typically the repo of a
+// `cosmonaut <target>` invocation that matched multiple workspaces) so
+// the list opens narrowed to the matches.
+func (m *listModel) setFilter(s string) {
+	m.filter = s
+	m.applyFilter()
 }
 
 func (m listModel) Init() tea.Cmd { return nil }
@@ -382,4 +390,3 @@ func clampHeight(s string, height, _ int) string {
 	}
 	return strings.Join(lines, "\n")
 }
-
