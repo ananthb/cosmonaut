@@ -66,6 +66,44 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSSHDefaultsAndOverrides(t *testing.T) {
+	var cfg Config
+
+	// Defaults: ControlMaster on, Tmux off, no map allocated.
+	if !cfg.WorkspaceSSHControlMaster("github", "cs-a") {
+		t.Error("default ControlMaster should be true")
+	}
+	if cfg.WorkspaceSSHTmux("github", "cs-a") {
+		t.Error("default Tmux should be false")
+	}
+
+	// Explicit override on one workspace doesn't leak to others.
+	off := false
+	cfg.SetWorkspaceSSHControlMaster("github", "cs-a", &off)
+	if cfg.WorkspaceSSHControlMaster("github", "cs-a") {
+		t.Error("explicit false should win over default")
+	}
+	if !cfg.WorkspaceSSHControlMaster("github", "cs-b") {
+		t.Error("cs-b should still see the default")
+	}
+
+	on := true
+	cfg.SetWorkspaceSSHTmux("coder", "ws-1", &on)
+	if !cfg.WorkspaceSSHTmux("coder", "ws-1") {
+		t.Error("explicit true should win over default")
+	}
+	if cfg.WorkspaceSSHTmux("github", "cs-a") {
+		t.Error("tmux for coder:ws-1 must not affect github:cs-a")
+	}
+
+	// Clearing the last setting on a workspace drops the entry, so the
+	// settings map doesn't accumulate dead keys over time.
+	cfg.SetWorkspaceSSHControlMaster("github", "cs-a", nil)
+	if _, ok := cfg.WorkspaceSSH["github:cs-a"]; ok {
+		t.Error("entry should be removed once both fields are nil")
+	}
+}
+
 func TestLoadCoderConfig(t *testing.T) {
 	content := `{
 		"workspaceProvider": "coder",

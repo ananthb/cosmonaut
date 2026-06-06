@@ -84,7 +84,7 @@ func TestEnsureIncludeLineMovesExistingToTop(t *testing.T) {
 func TestWriteCodespaceConfig(t *testing.T) {
 	dir := t.TempDir()
 	includeDir := filepath.Join(dir, "cosmonaut")
-	err := WriteCodespaceConfig(includeDir, "cs-demo", "Host cs-demo\n  HostName github.com\n")
+	err := WriteCodespaceConfig(includeDir, "cs-demo", "Host cs-demo\n  HostName github.com\n", ManagedExtrasOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,17 +102,53 @@ func TestWriteCodespaceConfig(t *testing.T) {
 	if !strings.Contains(got, managedBeginPrefix) || !strings.Contains(got, managedEndPrefix) {
 		t.Error("config file missing managed-block sentinels")
 	}
+	if strings.Contains(got, "ControlMaster") {
+		t.Error("ControlMaster should be absent when opts.ControlMaster=false")
+	}
+}
+
+func TestWriteCodespaceConfigWithControlMaster(t *testing.T) {
+	dir := t.TempDir()
+	includeDir := filepath.Join(dir, "cosmonaut")
+	err := WriteCodespaceConfig(includeDir, "cs-demo", "Host cs-demo\n  HostName github.com\n", ManagedExtrasOptions{ControlMaster: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(includeDir, "cs-demo.conf"))
+	got := string(data)
+	if !strings.Contains(got, "ControlMaster auto") {
+		t.Error("ControlMaster auto missing when opts.ControlMaster=true")
+	}
+	if !strings.Contains(got, "ControlPath ~/.ssh/cosmonaut/cm-%C") {
+		t.Error("ControlPath missing")
+	}
+	if !strings.Contains(got, "ControlPersist 10m") {
+		t.Error("ControlPersist missing")
+	}
 }
 
 func TestApplyManagedExtrasIdempotent(t *testing.T) {
 	base := "Host cs-demo\n  HostName github.com\n"
-	once := applyManagedExtras(base)
-	twice := applyManagedExtras(once)
+	once := applyManagedExtras(base, ManagedExtrasOptions{})
+	twice := applyManagedExtras(once, ManagedExtrasOptions{})
 	if once != twice {
 		t.Errorf("not idempotent:\nonce:  %q\ntwice: %q", once, twice)
 	}
 	if strings.Count(once, managedBeginPrefix) != 1 {
 		t.Errorf("BEGIN sentinel appears %d times, want 1", strings.Count(once, managedBeginPrefix))
+	}
+}
+
+func TestApplyManagedExtrasTogglesControlMaster(t *testing.T) {
+	base := "Host cs-demo\n  HostName github.com\n"
+	on := applyManagedExtras(base, ManagedExtrasOptions{ControlMaster: true})
+	off := applyManagedExtras(on, ManagedExtrasOptions{})
+	if strings.Contains(off, "ControlMaster") {
+		t.Errorf("toggling ControlMaster off left a stray directive:\n%s", off)
+	}
+	roundTrip := applyManagedExtras(off, ManagedExtrasOptions{ControlMaster: true})
+	if roundTrip != on {
+		t.Errorf("on -> off -> on round-trip not stable:\non:        %q\nroundTrip: %q", on, roundTrip)
 	}
 }
 
@@ -124,7 +160,7 @@ func TestRefreshManagedExtrasUpgradesLegacyFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte(legacy), 0644); err != nil {
 		t.Fatal(err)
 	}
-	changed, err := RefreshManagedExtras(path)
+	changed, err := RefreshManagedExtras(path, ManagedExtrasOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +176,7 @@ func TestRefreshManagedExtrasUpgradesLegacyFile(t *testing.T) {
 		t.Errorf("ServerAliveInterval appears %d times, want 1 (legacy block not stripped)", strings.Count(got, "ServerAliveInterval 15"))
 	}
 	// Second refresh is a no-op.
-	changed, err = RefreshManagedExtras(path)
+	changed, err = RefreshManagedExtras(path, ManagedExtrasOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +274,7 @@ func TestRefreshAllManagedExtras(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "skip.txt"), []byte("ignored"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	n, err := RefreshAllManagedExtras(dir)
+	n, err := RefreshAllManagedExtras(dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +282,31 @@ func TestRefreshAllManagedExtras(t *testing.T) {
 		t.Errorf("refreshed %d files, want 2", n)
 	}
 	// Non-existent dir is not an error.
-	if _, err := RefreshAllManagedExtras(filepath.Join(dir, "missing")); err != nil {
+	if _, err := RefreshAllManagedExtras(filepath.Join(dir, "missing"), nil); err != nil {
 		t.Errorf("missing dir should be no-op, got %v", err)
+	}
+}
+
+func TestRefreshAllManagedExtrasAppliesPerFileOpts(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "withcm.conf"), []byte("Host a\n  HostName a\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plain.conf"), []byte("Host b\n  HostName b\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := RefreshAllManagedExtras(dir, func(name string) ManagedExtrasOptions {
+		return ManagedExtrasOptions{ControlMaster: name == "withcm.conf"}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	with, _ := os.ReadFile(filepath.Join(dir, "withcm.conf"))
+	plain, _ := os.ReadFile(filepath.Join(dir, "plain.conf"))
+	if !strings.Contains(string(with), "ControlMaster auto") {
+		t.Error("withcm.conf should contain ControlMaster auto")
+	}
+	if strings.Contains(string(plain), "ControlMaster") {
+		t.Error("plain.conf should not contain ControlMaster")
 	}
 }

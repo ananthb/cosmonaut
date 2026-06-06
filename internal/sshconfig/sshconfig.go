@@ -199,13 +199,16 @@ func isConcreteHostAlias(alias string) bool {
 	return alias != "" && !strings.ContainsAny(alias, "*!?")
 }
 
-// managedExtrasVersion is bumped whenever managedExtrasBody changes, so
-// existing on-disk confs get rewritten by RefreshAllManagedExtras on the
-// next applet start.
-const managedExtrasVersion = 2
+// managedExtrasVersion is bumped whenever the managed extras body shape
+// changes, so existing on-disk confs get rewritten by
+// RefreshAllManagedExtras on the next applet start.
+//
+//	v1 -> v2: added IdentityAgent / PKCS11Provider none
+//	v2 -> v3: added optional ControlMaster + ControlPath + ControlPersist
+const managedExtrasVersion = 3
 
-// managedExtrasBody is the cosmonaut-controlled tail of every codespace
-// conf. Indented two spaces so it sits inside gh's `Host cs-*` block.
+// keepaliveExtras is the always-on portion of the managed block.
+// Indented two spaces so it sits inside the surrounding `Host` block.
 //
 // Keepalive: ServerAliveInterval pings every 15s, ServerAliveCountMax
 // drops after 3 missed pongs (45s), ConnectionAttempts retries the
@@ -216,23 +219,46 @@ const managedExtrasVersion = 2
 // when a smartcard/YubiKey configured in ~/.ssh/config isn't plugged in.
 // gh emits explicit IdentityFile + IdentitiesOnly yes for codespaces, so
 // no agent is needed here.
-const managedExtrasBody = `  ServerAliveInterval 15
+const keepaliveExtras = `  ServerAliveInterval 15
   ServerAliveCountMax 3
   ConnectionAttempts 3
   IdentityAgent none
   PKCS11Provider none
 `
 
+// controlMasterExtras multiplexes additional SSH sessions over a single
+// TCP connection so reconnects feel instant. ControlPath uses %C (a
+// hash of host/port/user) under ~/.ssh/cosmonaut/ so masters land in
+// the cosmonaut-owned dir and stay tidy. ControlPersist 10m keeps the
+// master alive briefly after the last child exits.
+const controlMasterExtras = `  ControlMaster auto
+  ControlPath ~/.ssh/cosmonaut/cm-%C
+  ControlPersist 10m
+`
+
+// ManagedExtrasOptions toggles optional pieces of the managed block.
+// Defaults (zero value) keep only the keepalive/identity lines.
+type ManagedExtrasOptions struct {
+	// ControlMaster enables ControlMaster auto + ControlPersist 10m so
+	// subsequent sessions reuse one TCP connection.
+	ControlMaster bool
+}
+
 const (
 	managedBeginPrefix = "  # BEGIN cosmonaut managed extras"
 	managedEndPrefix   = "  # END cosmonaut managed extras"
 )
 
-// managedExtras returns the current sentinel-bracketed managed block.
-func managedExtras() string {
+// BuildManagedExtras returns the sentinel-bracketed managed block for the
+// given options. Exposed so callers can preview what will be written.
+func BuildManagedExtras(opts ManagedExtrasOptions) string {
+	body := keepaliveExtras
+	if opts.ControlMaster {
+		body += controlMasterExtras
+	}
 	return fmt.Sprintf("%s v%d\n%s%s v%d\n",
 		managedBeginPrefix, managedExtrasVersion,
-		managedExtrasBody,
+		body,
 		managedEndPrefix, managedExtrasVersion)
 }
 
@@ -240,13 +266,14 @@ func managedExtras() string {
 // legacy unmarked extras from cosmonaut < v0.8.x) replaced by the
 // current managed block. Idempotent: applying twice yields the same
 // output as applying once.
-func applyManagedExtras(content string) string {
+func applyManagedExtras(content string, opts ManagedExtrasOptions) string {
 	content = stripManagedBlock(content)
 	body := strings.TrimRight(content, "\n")
+	extras := BuildManagedExtras(opts)
 	if body == "" {
-		return managedExtras()
+		return extras
 	}
-	return body + "\n" + managedExtras()
+	return body + "\n" + extras
 }
 
 // stripManagedBlock removes the cosmonaut-managed tail from content.
@@ -288,39 +315,39 @@ func indexAtLineStart(content, substr string) int {
 }
 
 // WriteCodespaceConfig writes the SSH config for a codespace, replacing
-// any prior cosmonaut-managed tail with the current one.
-func WriteCodespaceConfig(includeDir, codespaceName, content string) error {
+// any prior cosmonaut-managed tail with one built from opts.
+func WriteCodespaceConfig(includeDir, codespaceName, content string, opts ManagedExtrasOptions) error {
 	if err := os.MkdirAll(includeDir, 0700); err != nil {
 		return err
 	}
-	content = applyManagedExtras(content)
+	content = applyManagedExtras(content, opts)
 	path := filepath.Join(includeDir, codespaceName+".conf")
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
-func WriteWorkspaceConfig(includeDir, provider, workspaceName, content string) error {
+func WriteWorkspaceConfig(includeDir, provider, workspaceName, content string, opts ManagedExtrasOptions) error {
 	if err := os.MkdirAll(includeDir, 0700); err != nil {
 		return err
 	}
-	content = applyManagedExtras(content)
+	content = applyManagedExtras(content, opts)
 	path := SSHPaths{IncludeDir: includeDir}.WorkspaceConfigPath(provider, workspaceName)
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
-func EnsureWorkspaceConfig(paths SSHPaths, provider, workspaceName, content string) error {
+func EnsureWorkspaceConfig(paths SSHPaths, provider, workspaceName, content string, opts ManagedExtrasOptions) error {
 	if err := os.MkdirAll(paths.IncludeDir, 0700); err != nil {
 		return err
 	}
 	if err := EnsureConfigIncludesGenerated(paths.MainConfigPath); err != nil {
 		return err
 	}
-	return WriteWorkspaceConfig(paths.IncludeDir, provider, workspaceName, content)
+	return WriteWorkspaceConfig(paths.IncludeDir, provider, workspaceName, content, opts)
 }
 
-// RefreshManagedExtras rewrites the managed block in path to the current
-// version. Returns true if the file was changed. No-op if already current
-// or if the file doesn't exist.
-func RefreshManagedExtras(path string) (bool, error) {
+// RefreshManagedExtras rewrites the managed block in path so it matches the
+// current version and the given opts. Returns true if the file was changed.
+// No-op if already current or if the file doesn't exist.
+func RefreshManagedExtras(path string, opts ManagedExtrasOptions) (bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -328,17 +355,19 @@ func RefreshManagedExtras(path string) (bool, error) {
 		}
 		return false, err
 	}
-	updated := applyManagedExtras(string(data))
+	updated := applyManagedExtras(string(data), opts)
 	if updated == string(data) {
 		return false, nil
 	}
 	return true, os.WriteFile(path, []byte(updated), 0644)
 }
 
-// RefreshAllManagedExtras walks includeDir and refreshes the managed
-// block in every *.conf file. Returns the number of files updated.
-// Safe to call on every applet startup: idempotent and cheap.
-func RefreshAllManagedExtras(includeDir string) (int, error) {
+// RefreshAllManagedExtras walks includeDir and refreshes the managed block
+// in every *.conf file. optsFor maps a conf filename (e.g. "cs-abc.conf") to
+// the options for that file; if nil, every file gets the zero options (no
+// ControlMaster). Returns the number of files updated. Safe to call on
+// every applet startup: idempotent and cheap.
+func RefreshAllManagedExtras(includeDir string, optsFor func(filename string) ManagedExtrasOptions) (int, error) {
 	entries, err := os.ReadDir(includeDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -352,7 +381,11 @@ func RefreshAllManagedExtras(includeDir string) (int, error) {
 			continue
 		}
 		full := filepath.Join(includeDir, e.Name())
-		changed, err := RefreshManagedExtras(full)
+		var opts ManagedExtrasOptions
+		if optsFor != nil {
+			opts = optsFor(e.Name())
+		}
+		changed, err := RefreshManagedExtras(full, opts)
 		if err != nil {
 			return n, fmt.Errorf("%s: %w", full, err)
 		}

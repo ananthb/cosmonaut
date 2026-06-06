@@ -203,13 +203,21 @@ func (m *CoderManager) EnsureReachable(workspace *Workspace) error {
 	return fmt.Errorf("coder workspace %q is not ready yet (state: %s)", workspace.Name, latest.State)
 }
 
-func (m *CoderManager) PrepareSSH(paths sshconfig.SSHPaths, workspace *Workspace) (string, error) {
+func (m *CoderManager) PrepareSSH(paths sshconfig.SSHPaths, workspace *Workspace, opts sshconfig.ManagedExtrasOptions) (string, error) {
 	if err := sshconfig.EnsureMainConfigIncludesGenerated(paths.MainConfigPath); err != nil {
 		return "", err
 	}
 	configPath := filepath.Join(paths.IncludeDir, "coder.conf")
 	args := []string{"config-ssh", "--yes", "--ssh-config-file", configPath}
 	if _, err := m.run(args...); err != nil {
+		return "", err
+	}
+	// Append the cosmonaut-managed extras (keepalive + optional
+	// ControlMaster) to whatever coder config-ssh wrote. The block lands
+	// inside the last Host stanza in the file, which is the `Host *.coder`
+	// pattern coder emits — i.e. it applies to the `<workspace>.coder`
+	// alias we hand the editor.
+	if _, err := sshconfig.RefreshManagedExtras(configPath, opts); err != nil {
 		return "", err
 	}
 	return workspace.Name + ".coder", nil

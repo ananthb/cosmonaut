@@ -50,9 +50,14 @@ func Run() {
 // conf in ~/.ssh/cosmonaut/ so option additions (e.g. IdentityAgent none
 // for YubiKey users) take effect for codespaces created on older versions.
 // Idempotent: a no-op once every conf is at the current version.
+//
+// Migration runs before config is loaded, so optsFor is nil here — every
+// conf is re-written with the default options (ControlMaster off). The
+// applet's per-workspace ControlMaster setting takes effect on the next
+// launch through that workspace's PrepareSSH.
 func refreshSSHExtras() {
 	paths := sshconfig.ResolvePaths()
-	n, err := sshconfig.RefreshAllManagedExtras(paths.IncludeDir)
+	n, err := sshconfig.RefreshAllManagedExtras(paths.IncludeDir, nil)
 	if err != nil {
 		log.Printf("migrate: refresh ssh extras: %v", err)
 		return
