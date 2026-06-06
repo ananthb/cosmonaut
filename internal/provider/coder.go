@@ -47,7 +47,14 @@ func (m *CoderManager) EnsureAuth() error {
 }
 
 func (m *CoderManager) ListAllWorkspaces() ([]Workspace, error) {
-	out, err := m.run("list", "-o", "json")
+	return m.ListAllWorkspacesCtx(context.Background())
+}
+
+// ListAllWorkspacesCtx is the context-aware variant of ListAllWorkspaces.
+// The daemon poller uses this to cap how long a hung `coder list` can
+// pin the in-flight poll slot.
+func (m *CoderManager) ListAllWorkspacesCtx(ctx context.Context) ([]Workspace, error) {
+	out, err := m.runCtx(ctx, "list", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
