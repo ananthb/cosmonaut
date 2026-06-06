@@ -42,10 +42,31 @@ When the argument contains a `/`, it is treated as a repository name rather than
 | `--config <path>` | Config file path (default `cosmonaut.config.json`) |
 | `--codespace <name>` | Launch a specific codespace by name, skipping the selector |
 | `--editor <name>` | Editor to launch: `zed` (default) or `neovim` |
-| `--no-open` | Update SSH/editor config and print the `ssh://` target without launching the editor |
-| `--dry-run` | Do not create a codespace or launch the editor |
 
 The editor can also be set per-config via the top-level `editor` field.
+
+## Scripted lookup (`cosmonaut resolve`)
+
+For scripts that need a workspace's SSH alias without launching an editor,
+use the `resolve` subcommand. It performs the same selection as `cosmonaut
+shell` (positional target or `--codespace <name>`), writes the OpenSSH
+config under `~/.ssh/cosmonaut/`, and prints a JSON document to stdout:
+
+```bash
+$ cosmonaut resolve work
+{
+  "target": "owner/repo",
+  "workspace": "cs-abcdef",
+  "provider": "github",
+  "sshAlias": "cs.cs-abcdef.github.dev",
+  "workspacePath": "/workspaces/repo",
+  "remoteUrl": "ssh://cs.cs-abcdef.github.dev//workspaces/repo"
+}
+```
+
+All status output goes to stderr, so the stdout JSON is safe to pipe into
+`jq` or another consumer. This subcommand replaces the previous `--no-open`
+/ `--dry-run` flags on the root command.
 
 ## What it updates
 
