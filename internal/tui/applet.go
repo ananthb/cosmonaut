@@ -280,8 +280,8 @@ func (m AppletModel) renderHeader() string {
 	bar := strings.Join(tabs, dimStyle.Render(" · "))
 	title := titleStyle.Render("cosmonaut")
 	right := dimStyle.Render("tab: switch  ?: help  q: quit")
-	gap := strings.Repeat(" ", maxInt(1, m.width-lipgloss.Width(title)-lipgloss.Width(bar)-lipgloss.Width(right)-2))
-	return title + "  " + bar + gap + right + "\n" + dimStyle.Render(strings.Repeat("─", maxInt(0, m.width)))
+	gap := strings.Repeat(" ", max(1, m.width-lipgloss.Width(title)-lipgloss.Width(bar)-lipgloss.Width(right)-2))
+	return title + "  " + bar + gap + right + "\n" + dimStyle.Render(strings.Repeat("─", max(0, m.width)))
 }
 
 func (m AppletModel) renderFooter() string {
@@ -336,13 +336,6 @@ func (m AppletModel) activeInit() tea.Cmd {
 		return m.settings.Init()
 	}
 	return nil
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // styles shared across views — kept in one place so the applet has a

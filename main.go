@@ -146,7 +146,9 @@ func run(configPath, targetName, codespaceName, editorFlag string, controlMaster
 		cfg = &config.Config{}
 	}
 
-	interactive := term.IsTerminal(int(os.Stdin.Fd()))
+	stdinTTY := term.IsTerminal(int(os.Stdin.Fd()))
+	stdoutTTY := term.IsTerminal(int(os.Stdout.Fd()))
+	interactive := stdinTTY && stdoutTTY
 
 	// Bare `cosmonaut` with no target, no --codespace, and no --editor
 	// override drops the user straight into the persistent TUI applet.
