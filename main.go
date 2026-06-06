@@ -76,8 +76,9 @@ func rootCmd() *cobra.Command {
 
 With a target name, settings come from the config file. Without one, an
 interactive picker lets you choose (or create) a workspace. See the
-` + "`applet`" + ` subcommand for the tray app, ` + "`shell`" + ` for a remote SSH shell, and
-` + "`doctor`" + ` for environment checks.`,
+` + "`applet`" + ` subcommand for the tray app, ` + "`tui`" + ` for the same surfaces in
+the terminal, ` + "`shell`" + ` for a remote SSH shell, and ` + "`doctor`" + ` for
+environment checks.`,
 		Args:              cobra.MaximumNArgs(1),
 		SilenceUsage:      true,
 		SilenceErrors:     true,
@@ -110,6 +111,7 @@ interactive picker lets you choose (or create) a workspace. See the
 	cmd.AddCommand(appletCmd(&configPath))
 	cmd.AddCommand(doctorCmd())
 	cmd.AddCommand(shellCmd(&configPath))
+	cmd.AddCommand(tuiCmd(&configPath))
 
 	return cmd
 }
