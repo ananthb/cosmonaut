@@ -96,6 +96,29 @@ func (p SSHPaths) WorkspaceConfigPath(provider, workspaceName string) string {
 	return filepath.Join(p.IncludeDir, provider+"-"+workspaceName+".conf")
 }
 
+// ProviderAndNameFromFilename reverses WorkspaceConfigPath's naming so a
+// caller walking IncludeDir can map a *.conf back to the (provider, name)
+// pair that produced it. The mapping mirrors WorkspaceConfigPath:
+//
+//   - "coder.conf"  -> ("coder", "")        // shared Coder file
+//   - "<name>.conf" -> ("github", "<name>") // GitHub codespace
+//
+// Today GitHub is the only provider that writes per-workspace files
+// (Coder shares coder.conf), so every non-"coder.conf" filename maps to
+// a GitHub workspace whose name may itself contain "-" (e.g.
+// "cs-abc-123"). If a future provider adds "<provider>-<name>.conf"
+// filenames, extend this function to recognize the prefix.
+func ProviderAndNameFromFilename(filename string) (provider, name string) {
+	base := strings.TrimSuffix(filepath.Base(filename), ".conf")
+	if base == "" {
+		return "github", ""
+	}
+	if base == "coder" {
+		return "coder", ""
+	}
+	return "github", base
+}
+
 // EnsureConfigIncludesGenerated ensures the main SSH config includes the generated configs.
 func EnsureConfigIncludesGenerated(mainConfigPath string) error {
 	current, err := os.ReadFile(mainConfigPath)
