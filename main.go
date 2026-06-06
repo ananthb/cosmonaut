@@ -74,11 +74,10 @@ func rootCmd() *cobra.Command {
 		Short: "Open a remote workspace (Codespaces or Coder) in your editor",
 		Long: `Resolve a workspace and open it in your editor over SSH.
 
-With a target name, settings come from the config file. Without one, an
-interactive picker lets you choose (or create) a workspace. See the
-` + "`applet`" + ` subcommand for the tray app, ` + "`tui`" + ` for the same surfaces in
-the terminal, ` + "`shell`" + ` for a remote SSH shell, and ` + "`doctor`" + ` for
-environment checks.`,
+With a target name, settings come from the config file. Without one, the
+persistent terminal applet opens (same as ` + "`cosmonaut tui`" + `). See the
+` + "`applet`" + ` subcommand for the tray app, ` + "`shell`" + ` for a remote SSH shell,
+and ` + "`doctor`" + ` for environment checks.`,
 		Args:              cobra.MaximumNArgs(1),
 		SilenceUsage:      true,
 		SilenceErrors:     true,
@@ -152,6 +151,18 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
+
+	interactive := term.IsTerminal(int(os.Stdin.Fd()))
+
+	// Bare `cosmonaut` with no target, no --codespace, and no overrides
+	// that imply a direct launch (--dry-run, --no-open) drops the user
+	// straight into the persistent TUI applet. Same destination as
+	// `cosmonaut tui` — saves typing the subcommand for the common case.
+	if interactive && targetName == "" && codespaceName == "" && cfg.DefaultTarget == "" && !dryRun && !noOpen && editorFlag == "" {
+		data := tui.NewAppletData(cfg, absConfigPath)
+		return tui.RunApplet(data)
+	}
+
 	manager, err := provider.NewManager(cfg)
 	if err != nil {
 		return err
@@ -159,7 +170,6 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 	if err := manager.EnsurePrereqs(); err != nil {
 		return err
 	}
-	interactive := term.IsTerminal(int(os.Stdin.Fd()))
 
 	// Authenticate.
 	if interactive {
