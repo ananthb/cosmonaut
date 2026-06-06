@@ -16,13 +16,10 @@ func doctorCmd() *cobra.Command {
 	var fix bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
-		Short: "Diagnose and (optionally) fix problems blocking cosmonaut",
-		Long: `Run a battery of checks (gh OAuth scopes, ~/.ssh/config sanity, etc.)
-and report which pass and which need attention.
-
-With --fix, programmatic fixes are applied directly. Fixes that need a
-		TTY (such as gh auth refresh) are printed as commands you can copy and
-run yourself.`,
+		Short: "Check the local setup and optionally fix what's broken",
+		Long: `Check gh OAuth scopes, ~/.ssh/config, CLI presence, and other
+prerequisites. With --fix, in-process fixes are applied automatically;
+fixes that need a TTY are printed as commands to run yourself.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			configPath, err := cmd.Flags().GetString("config")
 			if err != nil {
@@ -31,7 +28,7 @@ run yourself.`,
 			return runDoctor(configPath, fix)
 		},
 	}
-	cmd.Flags().BoolVar(&fix, "fix", false, "apply fixes for failing checks")
+	cmd.Flags().BoolVar(&fix, "fix", false, "apply in-process fixes for failing checks")
 	return cmd
 }
 

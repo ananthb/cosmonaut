@@ -71,16 +71,13 @@ func rootCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "cosmonaut [target]",
-		Short: "Start or create remote workspaces and open them in your editor",
-		Long: `cosmonaut connects remote workspaces to your editor via SSH remoting.
+		Short: "Open a remote workspace (Codespaces or Coder) in your editor",
+		Long: `Resolve a workspace and open it in your editor over SSH.
 
-When a target name is given, its definition is read from the config file.
-Without a target, an interactive TUI lets you pick a repository (with
-type-ahead filtering across your provider's workspaces or repositories)
-and select or create a workspace.
-
-Config file fields:
-` + config.TargetFieldsHelp(),
+With a target name, settings come from the config file. Without one, an
+interactive picker lets you choose (or create) a workspace. See the
+` + "`applet`" + ` subcommand for the tray app, ` + "`shell`" + ` for a remote SSH shell, and
+` + "`doctor`" + ` for environment checks.`,
 		Args:              cobra.MaximumNArgs(1),
 		SilenceUsage:      true,
 		SilenceErrors:     true,
@@ -99,12 +96,12 @@ Config file fields:
 		},
 	}
 
-	cmd.PersistentFlags().StringVar(&configPath, "config", defaultConfigPath, "path to config file")
-	cmd.Flags().BoolVar(&noOpen, "no-open", false, "update SSH/Zed config and print target without launching Zed")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "do not create codespace or launch Zed")
-	cmd.Flags().StringVar(&codespaceName, "codespace", "", "launch a specific codespace by name (skip selection)")
-	cmd.Flags().StringVar(&editorFlag, "editor", "", "editor to use: zed (default) or neovim")
-	cmd.Flags().BoolVar(&controlMaster, "control-master", true, "enable OpenSSH ControlMaster multiplexing for this workspace (overrides per-workspace config)")
+	cmd.PersistentFlags().StringVar(&configPath, "config", defaultConfigPath, "config file path")
+	cmd.Flags().BoolVar(&noOpen, "no-open", false, "prepare SSH config and print target; don't launch the editor")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "don't create a workspace or launch the editor")
+	cmd.Flags().StringVar(&codespaceName, "codespace", "", "launch this codespace, skipping selection")
+	cmd.Flags().StringVar(&editorFlag, "editor", "", "zed (default) or neovim")
+	cmd.Flags().BoolVar(&controlMaster, "control-master", true, "use SSH ControlMaster multiplexing for instant reconnects")
 
 	_ = cmd.RegisterFlagCompletionFunc("config", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return nil, cobra.ShellCompDirectiveFilterFileExt

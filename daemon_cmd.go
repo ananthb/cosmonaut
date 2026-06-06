@@ -21,12 +21,8 @@ func appletConfigPath() string {
 func appletCmd(configPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "applet",
-		Short: "Run the menu bar applet (tray icon, hotkey, codespace lifecycle)",
-		Long: `Start the cosmonaut applet with system tray icon, global hotkey,
-and codespace lifecycle management.
-
-Daemon config fields (in "daemon" object):
-` + config.DaemonFieldsHelp(),
+		Short: "Run the menu bar applet (tray, hotkey, lifecycle)",
+		Long:  `Run the cosmonaut applet: tray icon, global hotkey, and workspace polling.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAppletStart(configPath)
 		},
