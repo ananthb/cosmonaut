@@ -246,7 +246,7 @@ func buildPortForwardCommand(key portForwardKey) (string, []string) {
 		if key.Protocol == "udp" {
 			flag = "--udp"
 		}
-		return "coder", []string{
+		return provider.NameCoder, []string{
 			"port-forward",
 			key.Workspace,
 			flag,

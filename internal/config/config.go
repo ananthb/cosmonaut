@@ -219,6 +219,9 @@ func (c *Config) IsCoderConfigured() bool {
 	if c == nil {
 		return false
 	}
+	// NOTE: cannot import provider package due to import cycle
+	// (provider imports config). Keep this literal in sync with
+	// provider.NameCoder.
 	if c.EffectiveWorkspaceProvider() == "coder" {
 		return true
 	}
@@ -256,6 +259,9 @@ func (c *Config) IsGitHubConfigured() bool {
 }
 
 func (t Target) ExplicitWorkspaceName(provider string) string {
+	// NOTE: cannot import provider package due to import cycle
+	// (provider imports config). Keep this literal in sync with
+	// provider.NameCoder.
 	if provider == "coder" {
 		if t.Coder != nil && t.Coder.WorkspaceName != "" {
 			return t.Coder.WorkspaceName
