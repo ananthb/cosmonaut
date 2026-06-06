@@ -264,18 +264,56 @@ func BuildManagedExtras(opts ManagedExtrasOptions) string {
 		managedEndPrefix, managedExtrasVersion)
 }
 
+// hostStanzaStartRe matches a `Host ` directive at the start of a line.
+// Case-sensitive (OpenSSH treats `Host`/`host`/`HOST` interchangeably, but
+// the cosmonaut-managed confs we own always emit `Host` with a capital H,
+// and the safety check exists specifically to refuse mis-attaching to
+// non-Host trailing content so a stricter match is the right call).
+var hostStanzaStartRe = regexp.MustCompile(`(?m)^Host[ \t]`)
+
+// matchStanzaStartRe matches a `Match ` directive at the start of a line.
+var matchStanzaStartRe = regexp.MustCompile(`(?m)^Match[ \t]`)
+
 // applyManagedExtras returns content with any prior managed block (or
 // legacy unmarked extras from cosmonaut < v0.8.x) replaced by the
 // current managed block. Idempotent: applying twice yields the same
 // output as applying once.
-func applyManagedExtras(content string, opts ManagedExtrasOptions) string {
+//
+// Returns an error if the trimmed content does not end inside a `Host`
+// stanza — i.e. the most recent top-level `Host ` line is not later in
+// the file than any `Match ` line. An empty (or whitespace-only) file is
+// allowed and yields just the managed block. This guards against
+// silently mis-attaching the indented directives to a trailing comment,
+// `Match` block, or other non-Host content.
+func applyManagedExtras(content string, opts ManagedExtrasOptions) (string, error) {
 	content = stripManagedBlock(content)
 	body := strings.TrimRight(content, "\n")
 	extras := BuildManagedExtras(opts)
-	if body == "" {
-		return extras
+	if strings.TrimSpace(body) == "" {
+		return extras, nil
 	}
-	return body + "\n" + extras
+	if !endsInHostStanza(body) {
+		return "", fmt.Errorf("applyManagedExtras: file does not end with a Host stanza; refusing to mis-attach managed block")
+	}
+	return body + "\n" + extras, nil
+}
+
+// endsInHostStanza reports whether body's trailing stanza is a `Host`
+// block — i.e. the offset of the last `Host ` line at column 0 is
+// greater than the offset of the last `Match ` line at column 0. A body
+// with no top-level `Host` line is never inside a Host stanza.
+func endsInHostStanza(body string) bool {
+	hostIdxs := hostStanzaStartRe.FindAllStringIndex(body, -1)
+	if len(hostIdxs) == 0 {
+		return false
+	}
+	lastHost := hostIdxs[len(hostIdxs)-1][0]
+	matchIdxs := matchStanzaStartRe.FindAllStringIndex(body, -1)
+	if len(matchIdxs) == 0 {
+		return true
+	}
+	lastMatch := matchIdxs[len(matchIdxs)-1][0]
+	return lastHost > lastMatch
 }
 
 // stripManagedBlock removes the cosmonaut-managed tail from content.
@@ -322,7 +360,10 @@ func WriteCodespaceConfig(includeDir, codespaceName, content string, opts Manage
 	if err := os.MkdirAll(includeDir, 0o700); err != nil {
 		return err
 	}
-	content = applyManagedExtras(content, opts)
+	content, err := applyManagedExtras(content, opts)
+	if err != nil {
+		return err
+	}
 	path := filepath.Join(includeDir, codespaceName+".conf")
 	return os.WriteFile(path, []byte(content), 0o644)
 }
@@ -331,7 +372,10 @@ func WriteWorkspaceConfig(includeDir, provider, workspaceName, content string, o
 	if err := os.MkdirAll(includeDir, 0o700); err != nil {
 		return err
 	}
-	content = applyManagedExtras(content, opts)
+	content, err := applyManagedExtras(content, opts)
+	if err != nil {
+		return err
+	}
 	path := SSHPaths{IncludeDir: includeDir}.WorkspaceConfigPath(provider, workspaceName)
 	return os.WriteFile(path, []byte(content), 0o644)
 }
@@ -357,7 +401,10 @@ func RefreshManagedExtras(path string, opts ManagedExtrasOptions) (bool, error) 
 		}
 		return false, err
 	}
-	updated := applyManagedExtras(string(data), opts)
+	updated, err := applyManagedExtras(string(data), opts)
+	if err != nil {
+		return false, err
+	}
 	if updated == string(data) {
 		return false, nil
 	}

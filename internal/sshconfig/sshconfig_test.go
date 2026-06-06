@@ -129,8 +129,14 @@ func TestWriteCodespaceConfigWithControlMaster(t *testing.T) {
 
 func TestApplyManagedExtrasIdempotent(t *testing.T) {
 	base := "Host cs-demo\n  HostName github.com\n"
-	once := applyManagedExtras(base, ManagedExtrasOptions{})
-	twice := applyManagedExtras(once, ManagedExtrasOptions{})
+	once, err := applyManagedExtras(base, ManagedExtrasOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	twice, err := applyManagedExtras(once, ManagedExtrasOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if once != twice {
 		t.Errorf("not idempotent:\nonce:  %q\ntwice: %q", once, twice)
 	}
@@ -141,14 +147,100 @@ func TestApplyManagedExtrasIdempotent(t *testing.T) {
 
 func TestApplyManagedExtrasTogglesControlMaster(t *testing.T) {
 	base := "Host cs-demo\n  HostName github.com\n"
-	on := applyManagedExtras(base, ManagedExtrasOptions{ControlMaster: true})
-	off := applyManagedExtras(on, ManagedExtrasOptions{})
+	on, err := applyManagedExtras(base, ManagedExtrasOptions{ControlMaster: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	off, err := applyManagedExtras(on, ManagedExtrasOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(off, "ControlMaster") {
 		t.Errorf("toggling ControlMaster off left a stray directive:\n%s", off)
 	}
-	roundTrip := applyManagedExtras(off, ManagedExtrasOptions{ControlMaster: true})
+	roundTrip, err := applyManagedExtras(off, ManagedExtrasOptions{ControlMaster: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if roundTrip != on {
 		t.Errorf("on -> off -> on round-trip not stable:\non:        %q\nroundTrip: %q", on, roundTrip)
+	}
+}
+
+func TestApplyManagedExtrasMultiHostUsesLastStanza(t *testing.T) {
+	base := "Host coder.*\n  ProxyCommand coder ssh --stdio %h\n\nHost *.coder\n  ProxyCommand coder ssh --stdio %h\n"
+	got, err := applyManagedExtras(base, ManagedExtrasOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(got, base) {
+		t.Errorf("expected output to start with original content, got:\n%s", got)
+	}
+	// Managed block should be appended after the last Host stanza
+	// (which is `Host *.coder`); the indented directives in the block
+	// will therefore attach to that stanza.
+	idxLastHost := strings.LastIndex(got, "Host *.coder")
+	idxManaged := strings.Index(got, managedBeginPrefix)
+	if idxLastHost < 0 || idxManaged < 0 || idxManaged < idxLastHost {
+		t.Errorf("managed block should sit after the last Host stanza, got:\n%s", got)
+	}
+}
+
+func TestApplyManagedExtrasRejectsTrailingCommentOnly(t *testing.T) {
+	base := "# just a comment\n# no host stanza here\n"
+	_, err := applyManagedExtras(base, ManagedExtrasOptions{})
+	if err == nil {
+		t.Fatal("expected error when file does not end with a Host stanza")
+	}
+	if !strings.Contains(err.Error(), "does not end with a Host stanza") {
+		t.Errorf("error message should mention missing Host stanza, got: %v", err)
+	}
+}
+
+func TestApplyManagedExtrasRejectsTrailingMatchBlock(t *testing.T) {
+	// Host comes first, then Match — the file ends in a Match block,
+	// so the managed block must not be appended.
+	base := "Host example\n  HostName example.com\n\nMatch host *.internal\n  ProxyJump bastion\n"
+	_, err := applyManagedExtras(base, ManagedExtrasOptions{})
+	if err == nil {
+		t.Fatal("expected error when file ends in a Match block")
+	}
+}
+
+func TestApplyManagedExtrasMatchInterleavedHostLast(t *testing.T) {
+	// Match block followed by a Host stanza — the Host wins, so the
+	// managed block should be appended cleanly.
+	base := "Match host *.internal\n  ProxyJump bastion\n\nHost cs-demo\n  HostName github.com\n"
+	got, err := applyManagedExtras(base, ManagedExtrasOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	idxHost := strings.LastIndex(got, "Host cs-demo")
+	idxMatch := strings.LastIndex(got, "Match host")
+	idxManaged := strings.Index(got, managedBeginPrefix)
+	if idxHost < idxMatch {
+		t.Errorf("expected Host stanza to be the last stanza in the body, got:\n%s", got)
+	}
+	if idxManaged < idxHost {
+		t.Errorf("managed block should sit after the last Host stanza, got:\n%s", got)
+	}
+}
+
+func TestApplyManagedExtrasEmptyFileReturnsBlockOnly(t *testing.T) {
+	got, err := applyManagedExtras("", ManagedExtrasOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error for empty file: %v", err)
+	}
+	if got != BuildManagedExtras(ManagedExtrasOptions{}) {
+		t.Errorf("empty file should yield just the managed block, got:\n%s", got)
+	}
+	// Whitespace-only content is treated the same as empty.
+	got, err = applyManagedExtras("\n\n  \n", ManagedExtrasOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error for whitespace-only file: %v", err)
+	}
+	if got != BuildManagedExtras(ManagedExtrasOptions{}) {
+		t.Errorf("whitespace-only file should yield just the managed block, got:\n%s", got)
 	}
 }
 
