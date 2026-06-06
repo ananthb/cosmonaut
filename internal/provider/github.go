@@ -88,7 +88,7 @@ func (m *GitHubManager) EnsureReachable(workspace *Workspace) error {
 	return codespace.EnsureReachable(m.Runner, workspace.Name)
 }
 
-func (m *GitHubManager) PrepareSSH(paths sshconfig.SSHPaths, workspace *Workspace) (string, error) {
+func (m *GitHubManager) PrepareSSH(paths sshconfig.SSHPaths, workspace *Workspace, opts sshconfig.ManagedExtrasOptions) (string, error) {
 	sshCfg, err := codespace.GetSSHConfig(m.Runner, workspace.Name)
 	if err != nil {
 		return "", err
@@ -97,7 +97,7 @@ func (m *GitHubManager) PrepareSSH(paths sshconfig.SSHPaths, workspace *Workspac
 	if err != nil {
 		return "", err
 	}
-	if err := sshconfig.EnsureWorkspaceConfig(paths, workspace.Provider, workspace.Name, sshCfg); err != nil {
+	if err := sshconfig.EnsureWorkspaceConfig(paths, workspace.Provider, workspace.Name, sshCfg, opts); err != nil {
 		return "", err
 	}
 	return alias, nil

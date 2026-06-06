@@ -233,7 +233,10 @@ func (d *Daemon) runLaunchFlow(win fyne.Window, target config.Target, resolvedNa
 
 		paths := sshconfig.ResolvePaths()
 		setStatus("Preparing SSH config...")
-		sshAlias, err := manager.PrepareSSH(paths, selected)
+		sshOpts := sshconfig.ManagedExtrasOptions{
+			ControlMaster: d.Cfg.WorkspaceSSHControlMaster(selected.Provider, selected.Name),
+		}
+		sshAlias, err := manager.PrepareSSH(paths, selected, sshOpts)
 		if err != nil {
 			showFlowError(win, err)
 			return

@@ -66,6 +66,7 @@ func rootCmd() *cobra.Command {
 		dryRun        bool
 		codespaceName string
 		editorFlag    string
+		controlMaster bool
 	)
 
 	cmd := &cobra.Command{
@@ -89,7 +90,12 @@ Config file fields:
 			if len(args) > 0 {
 				targetName = args[0]
 			}
-			return run(configPath, targetName, codespaceName, editorFlag, noOpen, dryRun)
+			var cmOverride *bool
+			if cmd.Flags().Changed("control-master") {
+				v := controlMaster
+				cmOverride = &v
+			}
+			return run(configPath, targetName, codespaceName, editorFlag, noOpen, dryRun, cmOverride)
 		},
 	}
 
@@ -98,6 +104,7 @@ Config file fields:
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "do not create codespace or launch Zed")
 	cmd.Flags().StringVar(&codespaceName, "codespace", "", "launch a specific codespace by name (skip selection)")
 	cmd.Flags().StringVar(&editorFlag, "editor", "", "editor to use: zed (default) or neovim")
+	cmd.Flags().BoolVar(&controlMaster, "control-master", true, "enable OpenSSH ControlMaster multiplexing for this workspace (overrides per-workspace config)")
 
 	_ = cmd.RegisterFlagCompletionFunc("config", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return nil, cobra.ShellCompDirectiveFilterFileExt
@@ -105,6 +112,7 @@ Config file fields:
 
 	cmd.AddCommand(appletCmd(&configPath))
 	cmd.AddCommand(doctorCmd())
+	cmd.AddCommand(shellCmd(&configPath))
 
 	return cmd
 }
@@ -135,7 +143,7 @@ func completeTargets(configPath *string) func(*cobra.Command, []string, string) 
 	}
 }
 
-func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRun bool) error {
+func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRun bool, controlMasterOverride *bool) error {
 	absConfigPath, err := filepath.Abs(configPath)
 	if err != nil {
 		return err
@@ -536,13 +544,16 @@ func run(configPath, targetName, codespaceName, editorFlag string, noOpen, dryRu
 	}
 
 	paths := sshconfig.ResolvePaths()
+	sshOpts := sshconfig.ManagedExtrasOptions{
+		ControlMaster: resolveControlMaster(cfg, selected.Provider, selected.Name, controlMasterOverride),
+	}
 	var sshAlias string
 	if interactive {
 		sshAlias, err = tui.RunWithSpinnerResult("Preparing SSH config", func() (string, error) {
-			return manager.PrepareSSH(paths, selected)
+			return manager.PrepareSSH(paths, selected, sshOpts)
 		})
 	} else {
-		sshAlias, err = manager.PrepareSSH(paths, selected)
+		sshAlias, err = manager.PrepareSSH(paths, selected, sshOpts)
 	}
 	if err != nil {
 		return err

@@ -42,7 +42,7 @@ type Manager interface {
 	StartWorkspace(workspace *Workspace) (*Workspace, error)
 	DeleteWorkspace(name string) error
 	EnsureReachable(workspace *Workspace) error
-	PrepareSSH(paths sshconfig.SSHPaths, workspace *Workspace) (string, error)
+	PrepareSSH(paths sshconfig.SSHPaths, workspace *Workspace, opts sshconfig.ManagedExtrasOptions) (string, error)
 }
 
 func RequireCommand(name string) error {

@@ -403,7 +403,8 @@ func (uw *unifiedWindow) showCosmoCodespaceDetail(csName, repo string) {
 	sshBtn := widget.NewButton("SSH", func() {
 		go func() {
 			sshAlias := fmt.Sprintf("cs.%s.github.dev", cs.Name)
-			openSSHInTerminal(sshAlias, target.WorkspacePath)
+			useTmux := uw.daemon.Cfg.WorkspaceSSHTmux(provider.NameGitHub, cs.Name)
+			openSSHInTerminal(sshAlias, target.WorkspacePath, useTmux)
 			if uw.daemon.sessions != nil {
 				uw.daemon.sessions.TrackSession(sshAlias)
 			}
@@ -422,6 +423,10 @@ func (uw *unifiedWindow) showCosmoCodespaceDetail(csName, repo string) {
 	}
 
 	actions := container.NewHBox(openBtn, editorSel, sshBtn, layout.NewSpacer(), deleteBtn)
+
+	sshSection := uw.buildWorkspaceSSHSection(provider.NameGitHub, cs.Name, func() {
+		uw.showCosmoCodespaceDetail(csName, repo)
+	})
 
 	// ── INFO: codespace details + SSH connection
 	csNameVal := widget.NewLabel(cs.Name)
@@ -461,6 +466,8 @@ func (uw *unifiedWindow) showCosmoCodespaceDetail(csName, repo string) {
 		actions,
 		widget.NewSeparator(),
 		info,
+		widget.NewSeparator(),
+		sshSection,
 		widget.NewSeparator(),
 		ports,
 	)
@@ -742,6 +749,17 @@ func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
 		uw.daemon.runLaunchFlow(uw.win, target, resolvedName, &workspace)
 		uw.daemon.Cfg.Editor = origEditor
 	})
+	sshBtn := widget.NewButton("SSH", func() {
+		go func() {
+			sshAlias := fmt.Sprintf("%s.coder", ws.Name)
+			useTmux := uw.daemon.Cfg.WorkspaceSSHTmux(provider.NameCoder, ws.Name)
+			workspacePath := guessWorkspacePath(target, &ws)
+			openSSHInTerminal(sshAlias, workspacePath, useTmux)
+			if uw.daemon.sessions != nil {
+				uw.daemon.sessions.TrackSession(sshAlias)
+			}
+		}()
+	})
 	var refreshBtn *widget.Button
 	refreshBtn = widget.NewButton("Refresh", func() {
 		refreshBtn.Disable()
@@ -796,15 +814,20 @@ func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
 		}
 	}
 	ports := uw.buildCoderPortsSection(ws, portTarget, portTargetName)
+	sshSection := uw.buildWorkspaceSSHSection(provider.NameCoder, ws.Name, func() {
+		uw.showCoderWorkspaceDetail(ws)
+	})
 
 	body := container.NewVBox(
 		statusRow,
 		heroTitle,
 		subtitle,
 		widget.NewSeparator(),
-		container.NewHBox(openBtn, editorSel, layout.NewSpacer(), refreshBtn, deleteBtn),
+		container.NewHBox(openBtn, editorSel, sshBtn, layout.NewSpacer(), refreshBtn, deleteBtn),
 		widget.NewSeparator(),
 		info,
+		widget.NewSeparator(),
+		sshSection,
 		widget.NewSeparator(),
 		ports,
 	)
@@ -1307,9 +1330,20 @@ func githubURL(pathSegments ...string) *url.URL {
 	return &u
 }
 
-// openSSHInTerminal opens an SSH session to a codespace in the default terminal.
-func openSSHInTerminal(sshAlias, workspacePath string) {
-	sshCmd := fmt.Sprintf("ssh -t %s 'cd %s && exec $SHELL -l'", sshAlias, workspacePath)
+// openSSHInTerminal opens an SSH session to a codespace in the default
+// terminal. When useTmux is true the remote command is `tmux new -A -s
+// cosmonaut` so the shell session survives an SSH drop and can be
+// re-attached by re-running the SSH button.
+func openSSHInTerminal(sshAlias, workspacePath string, useTmux bool) {
+	remoteCmd := "exec $SHELL -l"
+	if useTmux {
+		remoteCmd = "tmux new -A -s cosmonaut"
+	}
+	cdPrefix := ""
+	if workspacePath != "" {
+		cdPrefix = fmt.Sprintf("cd %s && ", workspacePath)
+	}
+	sshCmd := fmt.Sprintf("ssh -t %s '%s%s'", sshAlias, cdPrefix, remoteCmd)
 	openCommandInTerminal(sshCmd)
 }
 

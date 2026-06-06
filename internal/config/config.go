@@ -18,6 +18,88 @@ type Config struct {
 	Providers         ProviderConfigs   `json:"providers,omitempty"`
 	Targets           map[string]Target `json:"targets"`
 	Daemon            *DaemonConfig     `json:"daemon,omitempty"`
+
+	// WorkspaceSSH holds per-workspace SSH options keyed by "<provider>:<name>"
+	// (e.g. "github:cs-abc" or "coder:my-ws"). Unset workspaces fall back to
+	// the global defaults: ControlMaster on, Tmux off.
+	WorkspaceSSH map[string]WorkspaceSSHSettings `json:"workspaceSsh,omitempty"`
+}
+
+// WorkspaceSSHSettings stores per-workspace SSH knobs. Each field is a pointer
+// so "unset" can be distinguished from an explicit on/off.
+type WorkspaceSSHSettings struct {
+	// ControlMaster enables OpenSSH connection multiplexing
+	// (ControlMaster auto + ControlPersist) in the managed extras block,
+	// so additional sessions to the same workspace reuse the existing TCP
+	// connection. Default: true.
+	ControlMaster *bool `json:"controlMaster,omitempty"`
+	// Tmux wraps `cosmonaut shell` (and the GUI's SSH button) in
+	// `tmux new -A -s cosmonaut` on the remote so the shell session
+	// survives SSH drops. Default: false.
+	Tmux *bool `json:"tmux,omitempty"`
+}
+
+// WorkspaceSSHKey returns the canonical map key used by Config.WorkspaceSSH
+// for a workspace. Stable across renames since both provider and the
+// provider-issued name are immutable.
+func WorkspaceSSHKey(provider, name string) string {
+	return provider + ":" + name
+}
+
+// WorkspaceSSHControlMaster returns the resolved ControlMaster setting for a
+// workspace, with the default (true) applied when no explicit value is set.
+func (c *Config) WorkspaceSSHControlMaster(provider, name string) bool {
+	if c == nil {
+		return true
+	}
+	if s, ok := c.WorkspaceSSH[WorkspaceSSHKey(provider, name)]; ok && s.ControlMaster != nil {
+		return *s.ControlMaster
+	}
+	return true
+}
+
+// WorkspaceSSHTmux returns the resolved Tmux setting for a workspace, with
+// the default (false) applied when no explicit value is set.
+func (c *Config) WorkspaceSSHTmux(provider, name string) bool {
+	if c == nil {
+		return false
+	}
+	if s, ok := c.WorkspaceSSH[WorkspaceSSHKey(provider, name)]; ok && s.Tmux != nil {
+		return *s.Tmux
+	}
+	return false
+}
+
+// SetWorkspaceSSHControlMaster persists an explicit ControlMaster setting for
+// a workspace. Passing nil clears it (so the default applies).
+func (c *Config) SetWorkspaceSSHControlMaster(provider, name string, val *bool) {
+	c.setWorkspaceSSH(provider, name, func(s *WorkspaceSSHSettings) { s.ControlMaster = val })
+}
+
+// SetWorkspaceSSHTmux persists an explicit Tmux setting for a workspace.
+// Passing nil clears it (so the default applies).
+func (c *Config) SetWorkspaceSSHTmux(provider, name string, val *bool) {
+	c.setWorkspaceSSH(provider, name, func(s *WorkspaceSSHSettings) { s.Tmux = val })
+}
+
+func (c *Config) setWorkspaceSSH(provider, name string, mut func(*WorkspaceSSHSettings)) {
+	if c == nil {
+		return
+	}
+	key := WorkspaceSSHKey(provider, name)
+	if c.WorkspaceSSH == nil {
+		c.WorkspaceSSH = map[string]WorkspaceSSHSettings{}
+	}
+	s := c.WorkspaceSSH[key]
+	mut(&s)
+	if s.ControlMaster == nil && s.Tmux == nil {
+		delete(c.WorkspaceSSH, key)
+		if len(c.WorkspaceSSH) == 0 {
+			c.WorkspaceSSH = nil
+		}
+		return
+	}
+	c.WorkspaceSSH[key] = s
 }
 
 type ProviderConfigs struct {
