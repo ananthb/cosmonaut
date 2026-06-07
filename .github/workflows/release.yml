@@ -9,8 +9,8 @@ on:
 # bundle. nix-appimage stays as the AppImage source — it's hermetic
 # (squashfs + user namespaces) and there's no off-the-shelf
 # replacement that runs on any Linux box. The publish job aggregates
-# all artifacts, computes SHA256SUMS, cosign-signs everything, and
-# uploads the GitHub release.
+# all artifacts, computes SHA256SUMS, cosign-signs the checksum file,
+# and uploads the GitHub release.
 
 jobs:
   linux:
@@ -111,14 +111,20 @@ jobs:
 
       - name: Generate checksums and sign
         working-directory: artifacts
+        # Sign only SHA256SUMS — users verify the checksum file's
+        # cosign signature, then trust the listed hashes for each
+        # artifact. Avoids the .sig/.pem pair-per-file fanout.
+        #
+        # Write the checksum file via a tempfile so re-runs (where
+        # artifacts/SHA256SUMS may already exist) don't self-reference
+        # the freshly-truncated file via the `*` glob.
         run: |
-          sha256sum $(ls -1 | grep -v '\.sig$\|\.pem$\|SHA256SUMS') > SHA256SUMS
-          for f in *; do
-            cosign sign-blob --yes \
-              --output-signature "${f}.sig" \
-              --output-certificate "${f}.pem" \
-              "$f"
-          done
+          sha256sum * > ../SHA256SUMS
+          mv ../SHA256SUMS SHA256SUMS
+          cosign sign-blob --yes \
+            --output-signature SHA256SUMS.sig \
+            --output-certificate SHA256SUMS.pem \
+            SHA256SUMS
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
