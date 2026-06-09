@@ -265,6 +265,60 @@ func (d *Daemon) runLaunchFlow(win fyne.Window, target config.Target, resolvedNa
 	}()
 }
 
+// launchDefaultTarget mirrors the CLI `cosmonaut launch` command: it
+// resolves cfg.DefaultTarget, lists matching workspaces, and runs the
+// launch flow on the single match without any picker. When the match
+// is ambiguous (0 or >1 workspaces) it falls back to the picker
+// preselected on the target so the user can finish the selection.
+// Safe to call from any goroutine.
+func (d *Daemon) launchDefaultTarget() {
+	if d.Cfg == nil || d.Cfg.DefaultTarget == "" {
+		d.notify("No default target configured")
+		return
+	}
+	targetName := d.Cfg.DefaultTarget
+	target, ok := d.Cfg.Targets[targetName]
+	if !ok {
+		d.notify(fmt.Sprintf("Default target %q not found in config", targetName))
+		return
+	}
+	manager, err := d.managerForTarget(target)
+	if err != nil {
+		d.notify(fmt.Sprintf("Launch %s: %v", targetName, err))
+		return
+	}
+
+	fyne.Do(func() {
+		uw := d.newCosmoWindow()
+		progress := newProgressScreen("Resolving workspace...")
+		uw.win.SetContent(progress.canvas)
+		uw.win.Show()
+
+		go func() {
+			workspaces, err := manager.ListWorkspacesForTarget(target)
+			if err != nil {
+				progress.stop()
+				showFlowError(uw.win, err)
+				return
+			}
+			progress.stop()
+
+			if len(workspaces) == 1 {
+				ws := workspaces[0]
+				d.runLaunchFlow(uw.win, target, targetName, &ws)
+				return
+			}
+			fyne.Do(func() { uw.win.Close() })
+			if len(workspaces) == 0 {
+				d.notify(fmt.Sprintf("No workspaces for %q — choose one", targetName))
+			} else {
+				d.notify(fmt.Sprintf("%d workspaces for %q — choose one", len(workspaces), targetName))
+			}
+			d.showGUI(targetName)
+		}()
+	})
+}
+
 func (d *Daemon) managerForTarget(target config.Target) (provider.Manager, error) {
 	if target.Coder != nil {
 		return provider.NewCoderManager(d.Cfg), nil

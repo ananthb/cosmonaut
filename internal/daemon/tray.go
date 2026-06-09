@@ -83,7 +83,14 @@ func (d *Daemon) buildTrayMenu() *fyne.Menu {
 			go d.hotkeyActionPrevious()
 		}))
 	}
-	items = append(items, fyne.NewMenuItem("Launch...", func() {
+	launchItem := fyne.NewMenuItem("Launch", func() {
+		go d.launchDefaultTarget()
+	})
+	if d.Cfg == nil || d.Cfg.DefaultTarget == "" {
+		launchItem.Disabled = true
+	}
+	items = append(items, launchItem)
+	items = append(items, fyne.NewMenuItem("Open picker...", func() {
 		go d.showGUI()
 	}))
 
