@@ -94,6 +94,15 @@ func (d *Daemon) buildTrayMenu() *fyne.Menu {
 		go d.showGUI()
 	}))
 
+	// Refresh — manual re-poll of all providers. Auto-refresh fires on
+	// tray-open and window-focus, but a visible button is the escape
+	// hatch when either signal misses (cold start, CLI not yet ready,
+	// flaky provider call) and lets the user prove to themselves that
+	// the data is fresh.
+	items = append(items, fyne.NewMenuItem("Refresh workspaces", func() {
+		d.forcePollAsync(nil)
+	}))
+
 	// Preferences.
 	items = append(items, fyne.NewMenuItemSeparator())
 	items = append(items, d.preferencesMenuItem())
@@ -524,6 +533,33 @@ func (d *Daemon) rebuildTrayMenu() {
 		d.armRebuildTimerLocked(wait)
 		d.mu.Unlock()
 		return
+	}
+	d.pendingRebuild = false
+	d.mu.Unlock()
+	d.applyTrayMenu()
+}
+
+// rebuildTrayMenuNow forces a tray menu rebuild for data-change paths
+// (poll completion, refresh, post-delete). Unlike rebuildTrayMenu it
+// bypasses the interaction-window gate — once a poll detects new data,
+// keeping the stale menu in front of the user just so we don't dismiss
+// an open submenu is the worse trade. The cooldown still applies so
+// two rapid polls (e.g. forcePollAsync queued right behind the
+// scheduled tick) don't double-apply.
+//
+// Safe to call from any goroutine.
+func (d *Daemon) rebuildTrayMenuNow() {
+	if d.app == nil && d.applyTrayMenuFunc == nil {
+		return
+	}
+	d.mu.Lock()
+	if !d.lastApplyAt.IsZero() {
+		if remain := trayApplyCooldown - d.now().Sub(d.lastApplyAt); remain > 0 {
+			d.pendingRebuild = true
+			d.armRebuildTimerLocked(remain)
+			d.mu.Unlock()
+			return
+		}
 	}
 	d.pendingRebuild = false
 	d.mu.Unlock()

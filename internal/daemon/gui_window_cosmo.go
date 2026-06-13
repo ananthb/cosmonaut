@@ -60,7 +60,23 @@ func (d *Daemon) newCosmoWindow() *unifiedWindow {
 	uw.loadRepos()
 	uw.refreshBanner()
 	d.setActiveUnifiedWindow(uw)
+
+	// Subscribe to poll-driven workspace changes so the sidebar tree
+	// refreshes on its own once new data lands. The listener guards on
+	// uw.tree because it can fire before buildCosmoSidebar runs (the
+	// initial poll may finish between setActiveUnifiedWindow and
+	// SetContent), and unsubscribes on window close to avoid firing
+	// into freed widgets after the user dismisses the picker.
+	unsubscribe := d.AddWorkspaceListener(func() {
+		uw.loadRepos()
+		uw.applyFilter()
+		if uw.tree != nil {
+			uw.tree.Refresh()
+		}
+		uw.refreshBanner()
+	})
 	win.SetOnClosed(func() {
+		unsubscribe()
 		if d.activeUnifiedWindow() == uw {
 			d.setActiveUnifiedWindow(nil)
 		}
@@ -192,7 +208,25 @@ func (uw *unifiedWindow) buildCosmoSidebar() fyne.CanvasObject {
 	})
 	newBtn.Importance = widget.LowImportance
 
-	titleRow := container.NewBorder(nil, nil, container.NewHBox(mark, title), container.NewHBox(newBtn))
+	// Manual refresh: re-poll all providers and rebuild the tree once
+	// fresh data lands. Auto-refresh fires on window focus, but a
+	// visible button is the escape hatch when the user wants to prove
+	// the list is current (e.g. after creating a workspace from the
+	// Coder CLI in another window).
+	var refreshBtn *widget.Button
+	refreshBtn = widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() {
+		refreshBtn.Disable()
+		uw.daemon.forcePollAsync(func() {
+			uw.loadRepos()
+			uw.applyFilter()
+			uw.tree.Refresh()
+			uw.refreshBanner()
+			refreshBtn.Enable()
+		})
+	})
+	refreshBtn.Importance = widget.LowImportance
+
+	titleRow := container.NewBorder(nil, nil, container.NewHBox(mark, title), container.NewHBox(refreshBtn, newBtn))
 
 	// Search
 	filterEntry := widget.NewEntry()

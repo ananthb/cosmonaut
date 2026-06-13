@@ -168,6 +168,59 @@ func TestRebuildTrayMenu_OnTrayOpenedDoesNotFlush(t *testing.T) {
 	stopTimer(d)
 }
 
+func TestRebuildTrayMenuNow_BypassesInteractionWindow(t *testing.T) {
+	d, applies, setNow, cleanup := newTrayTestDaemon(t)
+	defer cleanup()
+
+	// Simulate the user opening the tray; rebuildTrayMenu would defer
+	// for the next 30 seconds, but rebuildTrayMenuNow should not.
+	d.mu.Lock()
+	d.trayOpenedAt = d.now()
+	d.mu.Unlock()
+	setNow(d.now().Add(5 * time.Second))
+
+	d.rebuildTrayMenuNow()
+	if got := applies.Load(); got != 1 {
+		t.Fatalf("rebuildTrayMenuNow inside interaction window: applies = %d, want 1", got)
+	}
+	d.mu.Lock()
+	if d.pendingRebuild {
+		d.mu.Unlock()
+		t.Fatalf("rebuildTrayMenuNow left pendingRebuild=true after applying")
+	}
+	d.mu.Unlock()
+}
+
+func TestRebuildTrayMenuNow_HonorsCooldown(t *testing.T) {
+	d, applies, setNow, cleanup := newTrayTestDaemon(t)
+	defer cleanup()
+
+	// Seed a recent apply so the cooldown gate trips.
+	d.mu.Lock()
+	d.lastApplyAt = d.now()
+	d.mu.Unlock()
+	setNow(d.now().Add(1 * time.Second))
+
+	d.rebuildTrayMenuNow()
+	if got := applies.Load(); got != 0 {
+		t.Fatalf("rebuildTrayMenuNow within cooldown: applies = %d, want 0", got)
+	}
+	d.mu.Lock()
+	if !d.pendingRebuild {
+		d.mu.Unlock()
+		t.Fatalf("rebuildTrayMenuNow within cooldown: pendingRebuild = false, want true")
+	}
+	d.mu.Unlock()
+	stopTimer(d)
+
+	// Past the cooldown — flush applies.
+	setNow(d.now().Add(2 * time.Second))
+	d.flushPendingRebuild()
+	if got := applies.Load(); got != 1 {
+		t.Fatalf("flush after cooldown: applies = %d, want 1", got)
+	}
+}
+
 func TestRebuildTrayMenu_AppliesWhenBothGatesClear(t *testing.T) {
 	d, applies, setNow, cleanup := newTrayTestDaemon(t)
 	defer cleanup()

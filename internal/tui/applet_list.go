@@ -369,7 +369,7 @@ func (m listModel) view(d *AppletData, width, height int) string {
 	}
 
 	b.WriteString("\n")
-	hint := "enter open  n new  d delete  r refresh  s settings  type to filter  q quit"
+	hint := "enter open  n new  d delete  r/ctrl+r refresh  s settings  type to filter  q quit"
 	b.WriteString(dimStyle.Render(hint))
 
 	return clampHeight(b.String(), height, width)

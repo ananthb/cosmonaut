@@ -179,6 +179,15 @@ func (m AppletModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab":
 			m = m.cycleViewBack()
 			return m, m.activeInit()
+		case "ctrl+r":
+			// Global refresh: re-poll every provider from any view.
+			// Per-view 'r' bindings (list: full refresh; detail:
+			// refresh ports) still work, but ctrl+r is the visible
+			// affordance shown in the header so users know it's there.
+			return m, tea.Batch(
+				m.pollCmd(),
+				emitFlash("Refreshing workspaces…", false),
+			)
 		}
 
 	case pollTickMsg:
@@ -300,7 +309,7 @@ func (m AppletModel) renderHeader() string {
 	}
 	bar := strings.Join(tabs, dimStyle.Render(" · "))
 	title := titleStyle.Render("cosmonaut")
-	right := dimStyle.Render("tab: switch  ?: help  q: quit")
+	right := dimStyle.Render("tab: switch  ctrl+r: refresh  q: quit")
 	gap := strings.Repeat(" ", max(1, m.width-lipgloss.Width(title)-lipgloss.Width(bar)-lipgloss.Width(right)-2))
 	return title + "  " + bar + gap + right + "\n" + dimStyle.Render(strings.Repeat("─", max(0, m.width)))
 }

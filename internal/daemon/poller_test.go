@@ -76,6 +76,71 @@ func TestPollProviderTimesOutBlockedListCall(t *testing.T) {
 	}
 }
 
+func TestWorkspacesDiffer(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b []provider.Workspace
+		want bool
+	}{
+		{
+			name: "both empty",
+			want: false,
+		},
+		{
+			name: "identical singleton",
+			a:    []provider.Workspace{{Provider: provider.NameCoder, Name: "ws-1", State: "running"}},
+			b:    []provider.Workspace{{Provider: provider.NameCoder, Name: "ws-1", State: "running"}},
+			want: false,
+		},
+		{
+			name: "reordered same set",
+			a: []provider.Workspace{
+				{Provider: provider.NameGitHub, Name: "a"},
+				{Provider: provider.NameCoder, Name: "b"},
+			},
+			b: []provider.Workspace{
+				{Provider: provider.NameCoder, Name: "b"},
+				{Provider: provider.NameGitHub, Name: "a"},
+			},
+			want: false,
+		},
+		{
+			name: "new workspace appeared",
+			a:    []provider.Workspace{{Provider: provider.NameGitHub, Name: "a"}},
+			b: []provider.Workspace{
+				{Provider: provider.NameGitHub, Name: "a"},
+				{Provider: provider.NameCoder, Name: "b"},
+			},
+			want: true,
+		},
+		{
+			name: "state changed",
+			a:    []provider.Workspace{{Provider: provider.NameCoder, Name: "ws-1", State: "stopped"}},
+			b:    []provider.Workspace{{Provider: provider.NameCoder, Name: "ws-1", State: "running"}},
+			want: true,
+		},
+		{
+			name: "branch changed",
+			a:    []provider.Workspace{{Provider: provider.NameGitHub, Name: "cs", Branch: "main"}},
+			b:    []provider.Workspace{{Provider: provider.NameGitHub, Name: "cs", Branch: "fix"}},
+			want: true,
+		},
+		{
+			name: "ignores LastUsedAt drift",
+			a:    []provider.Workspace{{Provider: provider.NameGitHub, Name: "cs", State: "Available", LastUsedAt: "2026-06-01T00:00:00Z"}},
+			b:    []provider.Workspace{{Provider: provider.NameGitHub, Name: "cs", State: "Available", LastUsedAt: "2026-06-14T00:00:00Z"}},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := workspacesDiffer(tc.a, tc.b); got != tc.want {
+				t.Fatalf("workspacesDiffer = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestReplaceWorkspacesByProvider(t *testing.T) {
 	current := []provider.Workspace{
 		{Provider: provider.NameGitHub, Name: "gh-one"},

@@ -61,6 +61,14 @@ type Daemon struct {
 
 	uwMu     sync.Mutex
 	activeUW *unifiedWindow
+
+	// Workspace-change listeners. Fired on the Fyne main thread when a
+	// poll lands and the workspace set has actually changed (see
+	// workspacesDiffer). Used by the GUI sidebar to refresh its tree
+	// without requiring the user to click a refresh button.
+	listenersMu  sync.Mutex
+	listeners    map[int]func()
+	nextListener int
 }
 
 // setActiveUnifiedWindow records the currently-open main window so other
@@ -242,4 +250,45 @@ func (d *Daemon) SetListErr(err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.listErr = err
+}
+
+// AddWorkspaceListener registers fn to be invoked on the Fyne main
+// thread after each poll where the workspace set has actually changed.
+// Returns a remove function that the caller MUST invoke when the
+// owning window closes — otherwise fn will keep firing into freed
+// widgets.
+//
+// Listeners are an alternative to polling d.Workspaces() on every
+// render: the GUI sidebar uses one to refresh its tree the moment new
+// data lands, instead of waiting for the user to click somewhere.
+func (d *Daemon) AddWorkspaceListener(fn func()) (remove func()) {
+	d.listenersMu.Lock()
+	defer d.listenersMu.Unlock()
+	if d.listeners == nil {
+		d.listeners = map[int]func(){}
+	}
+	d.nextListener++
+	id := d.nextListener
+	d.listeners[id] = fn
+	return func() {
+		d.listenersMu.Lock()
+		delete(d.listeners, id)
+		d.listenersMu.Unlock()
+	}
+}
+
+// notifyWorkspaceListeners fires every registered listener on the Fyne
+// main thread. Snapshots the listener map under the lock so a listener
+// can safely unregister itself (or another listener) without racing the
+// dispatch loop.
+func (d *Daemon) notifyWorkspaceListeners() {
+	d.listenersMu.Lock()
+	fns := make([]func(), 0, len(d.listeners))
+	for _, fn := range d.listeners {
+		fns = append(fns, fn)
+	}
+	d.listenersMu.Unlock()
+	for _, fn := range fns {
+		fyne.Do(fn)
+	}
 }

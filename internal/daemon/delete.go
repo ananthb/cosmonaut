@@ -103,7 +103,7 @@ func (d *Daemon) confirmAndDeleteWorkspace(parent fyne.Window, providerName, nam
 				}
 			})
 			if err == nil {
-				d.forcePollAsync()
+				d.forcePollAsync(nil)
 			}
 		}()
 	}, parent)

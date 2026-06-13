@@ -120,11 +120,18 @@ func (d *Daemon) poll() {
 // action and would clobber the post-action state on completion. Always
 // async because the wait can be long if the in-flight call hangs; the
 // caller never wants to block on it.
-func (d *Daemon) forcePollAsync() {
+//
+// done, if non-nil, is invoked on the Fyne main thread once the poll
+// completes — useful for re-enabling a Refresh button or refreshing a
+// view that reads d.Workspaces() synchronously.
+func (d *Daemon) forcePollAsync(done func()) {
 	go func() {
 		d.acquirePoll()
 		defer d.releasePoll()
 		d.runPoll()
+		if done != nil {
+			fyne.Do(done)
+		}
 	}()
 }
 
@@ -183,16 +190,56 @@ func (d *Daemon) runPoll() {
 
 	log.Printf("poll: fetched %d github codespaces and %d total workspaces", len(codespaces), len(workspaces))
 
-	old := d.Codespaces()
+	oldCodespaces := d.Codespaces()
+	oldWorkspaces := d.Workspaces()
 	d.SetCodespaces(codespaces)
 	d.SetWorkspaces(workspaces)
 
-	if len(old) > 0 {
-		d.detectStateChanges(old, codespaces)
+	if len(oldCodespaces) > 0 {
+		d.detectStateChanges(oldCodespaces, codespaces)
 	}
 	d.checkAutoStop(codespaces)
 	d.updateTrayIcon(workspaces)
-	d.rebuildTrayMenu()
+
+	// Data-change rebuild: the interaction-window gate exists so an
+	// open submenu isn't dismissed by a routine rebuild, but when the
+	// poll has actually changed the menu's contents (new workspace,
+	// state transition, etc.) the user is better served by the fresh
+	// menu than by 30 more seconds of stale data. When the data is
+	// identical, fall through to the gated path — same end state, but
+	// the gate stays in place for any unrelated config-driven rebuild.
+	if workspacesDiffer(oldWorkspaces, workspaces) {
+		d.rebuildTrayMenuNow()
+		d.notifyWorkspaceListeners()
+	} else {
+		d.rebuildTrayMenu()
+	}
+}
+
+// workspacesDiffer reports whether two workspace lists differ in any
+// field the tray menu or GUI sidebar renders. Order-insensitive: only
+// the multiset of (provider, name, state, displayName, repo, branch)
+// tuples matters. Used by runPoll to skip the expensive rebuild path
+// when a poll returned the same data we already had.
+func workspacesDiffer(a, b []provider.Workspace) bool {
+	if len(a) != len(b) {
+		return true
+	}
+	type key struct {
+		provider, name, state, displayName, repo, branch string
+	}
+	tally := make(map[key]int, len(a))
+	for _, ws := range a {
+		tally[key{ws.Provider, ws.Name, ws.State, ws.DisplayName, ws.Repository, ws.Branch}]++
+	}
+	for _, ws := range b {
+		k := key{ws.Provider, ws.Name, ws.State, ws.DisplayName, ws.Repository, ws.Branch}
+		if tally[k] == 0 {
+			return true
+		}
+		tally[k]--
+	}
+	return false
 }
 
 // pollProvider does the CLI presence check + list call for one
@@ -267,6 +314,7 @@ func (d *Daemon) refreshCoderWorkspacesAsync(done func()) {
 	go func() {
 		manager := provider.NewCoderManager(d.Cfg)
 		workspaces, err := manager.ListAllWorkspaces()
+		oldWorkspaces := d.Workspaces()
 		if err != nil {
 			log.Printf("refresh(coder): %v", err)
 			if d.Cfg != nil && d.Cfg.EffectiveWorkspaceProvider() == provider.NameCoder {
@@ -274,14 +322,19 @@ func (d *Daemon) refreshCoderWorkspacesAsync(done func()) {
 			}
 			d.notify(fmt.Sprintf("Refreshing Coder workspaces failed: %v", err))
 		} else {
-			d.SetWorkspaces(replaceWorkspacesByProvider(d.Workspaces(), provider.NameCoder, workspaces))
+			d.SetWorkspaces(replaceWorkspacesByProvider(oldWorkspaces, provider.NameCoder, workspaces))
 			if d.Cfg != nil && d.Cfg.EffectiveWorkspaceProvider() == provider.NameCoder {
 				d.SetListErr(nil)
 			}
 			d.notify(fmt.Sprintf("Refreshed %d Coder workspace(s)", len(workspaces)))
 		}
 		d.updateTrayIcon(d.Workspaces())
-		d.rebuildTrayMenu()
+		if workspacesDiffer(oldWorkspaces, d.Workspaces()) {
+			d.rebuildTrayMenuNow()
+			d.notifyWorkspaceListeners()
+		} else {
+			d.rebuildTrayMenu()
+		}
 		if done != nil {
 			fyne.Do(done)
 		}
