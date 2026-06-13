@@ -14,6 +14,14 @@ import (
 func newTrayTestDaemon(t *testing.T) (*Daemon, *atomic.Int32, func(time.Time), func()) {
 	t.Helper()
 	d := &Daemon{}
+	// onTrayOpened triggers maybePollAsync, which would spawn a poll
+	// goroutine that touches d.pollCond and the Fyne tray. Initialize
+	// pollCond so the goroutine — if it ever spawns — doesn't nil-deref,
+	// and stamp lastPollAt with a real-time value (maybePollAsync uses
+	// time.Since, not d.nowFunc) so the debounce gate suppresses the
+	// spawn entirely.
+	d.pollCond = sync.NewCond(&d.mu)
+	d.lastPollAt = time.Now()
 	var mu sync.Mutex
 	now := time.Unix(1_700_000_000, 0)
 	d.nowFunc = func() time.Time {
