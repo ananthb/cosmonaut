@@ -67,6 +67,7 @@ type Issue struct {
 // sites can refer to a check without string-matching the title.
 const (
 	CodespaceScopeID = "gh-codespace-scope"
+	CoderLoginID     = "coder-login"
 	HostStarID       = "ssh-host-star"
 	IncludeDirID     = "ssh-include-dir"
 )
@@ -86,6 +87,9 @@ func CatalogForProvider(providerName string, listErr func() error) []Check {
 	if providerName == provider.NameGitHub {
 		checks = append([]Check{ghCodespaceScopeCheck(listErr)}, checks...)
 	}
+	if providerName == provider.NameCoder {
+		checks = append([]Check{coderLoginCheck(listErr)}, checks...)
+	}
 	return checks
 }
 
@@ -97,6 +101,48 @@ func FindByID(checks []Check, id string) *Check {
 		}
 	}
 	return nil
+}
+
+// coderLoginCheck flags the case where the local `coder` CLI has no
+// usable session — typically because the session expired or `coder
+// logout` was run. Without this, `coder list` errors out and the
+// sidebar stays empty with no obvious cause.
+func coderLoginCheck(listErr func() error) Check {
+	bare := `coder login`
+	return Check{
+		ID:    CoderLoginID,
+		Title: "Coder CLI is logged in",
+		Description: "Listing workspaces requires an authenticated " +
+			"`coder` session. Without one, the sidebar stays empty.",
+		Status: func() *Issue {
+			err := listErr()
+			if err == nil || !isCoderUnauthenticated(err) {
+				return nil
+			}
+			return &Issue{
+				Severity: SeverityError,
+				Summary:  "Coder CLI is not logged in; workspaces will not load until you sign in.",
+			}
+		},
+		FixCommand: func() string { return bare },
+	}
+}
+
+// isCoderUnauthenticated reports whether err looks like a coder CLI
+// authentication failure. The coder CLI's wording has varied over
+// releases ("Login required", "Unauthorized", "your session has
+// expired"), so match the same set of substrings the daemon tray and
+// TUI already key off so all three surfaces stay in sync.
+func isCoderUnauthenticated(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not authenticated") ||
+		strings.Contains(msg, "coder login") ||
+		strings.Contains(msg, "unauthorized") ||
+		strings.Contains(msg, "session has expired") ||
+		strings.Contains(msg, "login required")
 }
 
 func ghCodespaceScopeCheck(listErr func() error) Check {

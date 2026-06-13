@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -76,6 +77,45 @@ func TestIncludeDirIssueStricterThan0700OK(t *testing.T) {
 	}
 	if issue := includeDirIssue(dir); issue != nil {
 		t.Errorf("expected no issue for 0600 dir, got %+v", issue)
+	}
+}
+
+func TestCoderLoginCheckDetectsLoggedOut(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"unrelated", errors.New("coder list timed out"), false},
+		{"login required", errors.New("Error: Login required (run `coder login`)"), true},
+		{"not authenticated", errors.New("not authenticated"), true},
+		{"unauthorized", errors.New("server returned 401 Unauthorized"), true},
+		{"session expired", errors.New("your session has expired, please log in again"), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			check := coderLoginCheck(func() error { return tc.err })
+			issue := check.Status()
+			got := issue != nil
+			if got != tc.want {
+				t.Fatalf("issue presence = %v, want %v (err=%v)", got, tc.want, tc.err)
+			}
+			if got && issue.Severity != SeverityError {
+				t.Errorf("want SeverityError, got %v", issue.Severity)
+			}
+		})
+	}
+}
+
+func TestCatalogIncludesCoderLoginCheck(t *testing.T) {
+	checks := CatalogForProvider(provider.NameCoder, func() error { return nil })
+	if FindByID(checks, CoderLoginID) == nil {
+		t.Fatalf("coder catalog is missing %q", CoderLoginID)
+	}
+	gh := CatalogForProvider(provider.NameGitHub, func() error { return nil })
+	if FindByID(gh, CoderLoginID) != nil {
+		t.Errorf("github catalog should not include %q", CoderLoginID)
 	}
 }
 
