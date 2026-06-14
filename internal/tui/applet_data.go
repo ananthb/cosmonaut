@@ -166,7 +166,7 @@ func (d *AppletData) Poll() PollResult {
 	var combined []provider.Workspace
 	var firstErr error
 
-	if d.cfg.IsGitHubConfigured() {
+	if provider.IsGitHubAvailable() {
 		ws, cs, err := d.pollGitHub()
 		d.setProviderStatus(provider.NameGitHub, "gh", err)
 		if err != nil && firstErr == nil {
@@ -177,7 +177,7 @@ func (d *AppletData) Poll() PollResult {
 		d.mu.Unlock()
 		combined = append(combined, ws...)
 	}
-	if d.cfg.IsCoderConfigured() {
+	if provider.IsCoderAvailable() {
 		ws, err := d.pollCoder()
 		d.setProviderStatus(provider.NameCoder, "coder", err)
 		if err != nil && firstErr == nil {

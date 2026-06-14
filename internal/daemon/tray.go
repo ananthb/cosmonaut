@@ -118,7 +118,7 @@ func (d *Daemon) buildTrayMenu() *fyne.Menu {
 
 func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 	all := d.Codespaces()
-	if len(all) == 0 && !d.Cfg.IsGitHubConfigured() {
+	if len(all) == 0 && !provider.IsGitHubAvailable() {
 		return nil
 	}
 
@@ -196,8 +196,7 @@ func githubStatusMessage(status ProviderStatus) string {
 
 func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {
 	workspaces := filterWorkspacesByProvider(d.Workspaces(), provider.NameCoder)
-	configured := d.Cfg != nil && d.Cfg.IsCoderConfigured()
-	if len(workspaces) == 0 && !configured {
+	if len(workspaces) == 0 && !provider.IsCoderAvailable() {
 		return nil
 	}
 

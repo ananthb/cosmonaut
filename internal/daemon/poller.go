@@ -179,12 +179,9 @@ func (d *Daemon) runPoll() {
 		return codespacesToWorkspaces(cs), nil
 	})
 
-	var coderWorkspaces []provider.Workspace
-	if d.Cfg != nil && d.Cfg.IsCoderConfigured() {
-		coderWorkspaces = d.pollProvider(provider.NameCoder, "coder", func(ctx context.Context) ([]provider.Workspace, error) {
-			return provider.NewCoderManager(d.Cfg).ListAllWorkspacesCtx(ctx)
-		})
-	}
+	coderWorkspaces := d.pollProvider(provider.NameCoder, "coder", func(ctx context.Context) ([]provider.Workspace, error) {
+		return provider.NewCoderManager(d.Cfg).ListAllWorkspacesCtx(ctx)
+	})
 
 	workspaces := append(ghWorkspaces, coderWorkspaces...)
 

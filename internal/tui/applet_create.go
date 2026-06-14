@@ -99,11 +99,13 @@ func newCreateModel(d *AppletData) createModel {
 		}
 	}
 
-	// Default provider selection. Prefer whichever is configured; if both
-	// are, default to GitHub but allow toggling. The provider row is
-	// hidden when only one is in play.
-	gh := cfg.IsGitHubConfigured()
-	cd := cfg.IsCoderConfigured() && len(m.coderTargets) > 0
+	// Default provider selection. Prefer whichever provider is available
+	// (CLI + auth); if both are, default to GitHub but allow toggling.
+	// The provider row is hidden when only one is in play. Coder also
+	// requires at least one Coder-tagged target since create needs a
+	// template selector.
+	gh := provider.IsGitHubAvailable()
+	cd := provider.IsCoderAvailable() && len(m.coderTargets) > 0
 	switch {
 	case gh && cd:
 		m.providerName = provider.NameGitHub

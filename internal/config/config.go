@@ -382,57 +382,6 @@ func (c *Config) effectiveWorkspaceProviderLocked() string {
 	return c.WorkspaceProvider
 }
 
-// IsCoderConfigured reports whether Coder is in use anywhere in the
-// config: as the effective provider, or via any target that declares a
-// `coder` block. Used to keep the Coder menu visible whenever the user
-// has wired up Coder, even if the API call failed on the last poll.
-func (c *Config) IsCoderConfigured() bool {
-	if c == nil {
-		return false
-	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	// NOTE: cannot import provider package due to import cycle
-	// (provider imports config). Keep this literal in sync with
-	// provider.NameCoder.
-	if c.effectiveWorkspaceProviderLocked() == "coder" {
-		return true
-	}
-	for _, t := range c.Targets {
-		if t.Coder != nil {
-			return true
-		}
-	}
-	return false
-}
-
-// IsGitHubConfigured reports whether GitHub Codespaces is in use:
-// either as the effective provider (the default), or via any target
-// that doesn't declare a `coder` block.
-//
-// Note the asymmetry with IsCoderConfigured: GitHub is the default
-// provider, so the absence of an explicit `coder` block on a target
-// makes that target an implicit GitHub target. A nil Config (no file
-// loaded yet) is therefore treated as "GitHub configured", which lets
-// the Codespaces tray submenu appear during early startup. Coder, by
-// contrast, only counts when targets opt in explicitly via t.Coder.
-func (c *Config) IsGitHubConfigured() bool {
-	if c == nil {
-		return true
-	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.effectiveWorkspaceProviderLocked() == "github" {
-		return true
-	}
-	for _, t := range c.Targets {
-		if t.Coder == nil {
-			return true
-		}
-	}
-	return false
-}
-
 func (t Target) ExplicitWorkspaceName(provider string) string {
 	// NOTE: cannot import provider package due to import cycle
 	// (provider imports config). Keep this literal in sync with
