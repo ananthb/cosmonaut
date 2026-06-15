@@ -69,6 +69,12 @@ type Daemon struct {
 	listenersMu  sync.Mutex
 	listeners    map[int]func()
 	nextListener int
+
+	// Theme-change listeners: fired when the OS flips light/dark, so
+	// canvas primitives (which snapshot color at construction) get rebuilt.
+	themeMu           sync.Mutex
+	themeListeners    map[int]func()
+	nextThemeListener int
 }
 
 // setActiveUnifiedWindow records the currently-open main window so other
@@ -149,6 +155,16 @@ func (d *Daemon) Run() error {
 	d.app = app.NewWithID("dev.cosmonaut.applet")
 	d.app.Settings().SetTheme(newCosmoTheme())
 	d.app.SetIcon(appIcon())
+
+	prevVariant := d.app.Settings().ThemeVariant()
+	d.app.Settings().AddListener(func(s fyne.Settings) {
+		v := s.ThemeVariant()
+		if v == prevVariant {
+			return
+		}
+		prevVariant = v
+		d.notifyThemeListeners()
+	})
 
 	log.Printf("applet started (pid %d)", os.Getpid())
 
@@ -288,6 +304,34 @@ func (d *Daemon) notifyWorkspaceListeners() {
 		fns = append(fns, fn)
 	}
 	d.listenersMu.Unlock()
+	for _, fn := range fns {
+		fyne.Do(fn)
+	}
+}
+
+func (d *Daemon) addThemeListener(fn func()) (remove func()) {
+	d.themeMu.Lock()
+	defer d.themeMu.Unlock()
+	if d.themeListeners == nil {
+		d.themeListeners = map[int]func(){}
+	}
+	d.nextThemeListener++
+	id := d.nextThemeListener
+	d.themeListeners[id] = fn
+	return func() {
+		d.themeMu.Lock()
+		delete(d.themeListeners, id)
+		d.themeMu.Unlock()
+	}
+}
+
+func (d *Daemon) notifyThemeListeners() {
+	d.themeMu.Lock()
+	fns := make([]func(), 0, len(d.themeListeners))
+	for _, fn := range d.themeListeners {
+		fns = append(fns, fn)
+	}
+	d.themeMu.Unlock()
 	for _, fn := range fns {
 		fyne.Do(fn)
 	}

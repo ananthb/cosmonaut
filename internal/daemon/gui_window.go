@@ -28,6 +28,9 @@ type unifiedWindow struct {
 	filter       string
 	filtered     []string // repos matching current filter
 	coderTargets []string
+
+	// currentView re-invokes the active right-panel view on theme change.
+	currentView func()
 }
 
 func (uw *unifiedWindow) loadRepos() {
@@ -272,6 +275,7 @@ func (uw *unifiedWindow) showWorkspaceDetail(providerName, name string) {
 }
 
 func (uw *unifiedWindow) showCoderSummary() {
+	uw.currentView = uw.showCoderSummary
 	all := filterWorkspacesByProvider(uw.daemon.Workspaces(), provider.NameCoder)
 	title := widget.NewLabel("Coder Workspaces")
 	title.TextStyle = fyne.TextStyle{Bold: true}

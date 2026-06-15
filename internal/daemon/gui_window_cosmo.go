@@ -75,12 +75,6 @@ func (d *Daemon) newCosmoWindow() *unifiedWindow {
 		}
 		uw.refreshBanner()
 	})
-	win.SetOnClosed(func() {
-		unsubscribe()
-		if d.activeUnifiedWindow() == uw {
-			d.setActiveUnifiedWindow(nil)
-		}
-	})
 
 	// Background fetch of all user repos.
 	go func() {
@@ -96,12 +90,31 @@ func (d *Daemon) newCosmoWindow() *unifiedWindow {
 		})
 	}()
 
-	sidebar := uw.buildCosmoSidebar()
+	rebuild := func() {
+		sidebar := uw.buildCosmoSidebar()
+		split := container.NewHSplit(sidebar, uw.content)
+		split.Offset = 0.32
+		win.SetContent(container.NewBorder(uw.banner, nil, nil, nil, split))
+	}
+	rebuild()
 	uw.showCosmoWelcome()
 
-	split := container.NewHSplit(sidebar, uw.content)
-	split.Offset = 0.32
-	win.SetContent(container.NewBorder(uw.banner, nil, nil, nil, split))
+	// Tree selection and branch expansion are reset on theme change.
+	unsubscribeTheme := d.addThemeListener(func() {
+		rebuild()
+		uw.refreshBanner()
+		if uw.currentView != nil {
+			uw.currentView()
+		}
+	})
+
+	win.SetOnClosed(func() {
+		unsubscribe()
+		unsubscribeTheme()
+		if d.activeUnifiedWindow() == uw {
+			d.setActiveUnifiedWindow(nil)
+		}
+	})
 	return uw
 }
 
@@ -125,10 +138,10 @@ func (uw *unifiedWindow) refreshBanner() {
 // failing check. A tinted background and bold severity badge make the
 // banner hard to miss, so users notice cosmonaut needs their attention.
 func (uw *unifiedWindow) buildIssueBanner(c doctor.Check, issue *doctor.Issue) fyne.CanvasObject {
-	accent := cOrange
+	accent := statusWarn
 	badgeText := "WARNING"
 	if issue.Severity == doctor.SeverityError {
-		accent = cRed
+		accent = statusError
 		badgeText = "ERROR"
 	}
 
@@ -141,7 +154,7 @@ func (uw *unifiedWindow) buildIssueBanner(c doctor.Check, issue *doctor.Issue) f
 	badge.TextSize = 10
 	badge.TextStyle = fyne.TextStyle{Monospace: true, Bold: true}
 
-	title := canvas.NewText(c.Title, cText)
+	title := canvas.NewText(c.Title, theme.Color(theme.ColorNameForeground))
 	title.TextSize = 13
 	title.TextStyle = fyne.TextStyle{Bold: true}
 
@@ -199,7 +212,7 @@ func (uw *unifiedWindow) buildCosmoSidebar() fyne.CanvasObject {
 	mark.SetMinSize(fyne.NewSize(22, 22))
 	mark.FillMode = canvas.ImageFillContain
 
-	title := canvas.NewText("Cosmonaut", cText)
+	title := canvas.NewText("Cosmonaut", theme.Color(theme.ColorNameForeground))
 	title.TextStyle = fyne.TextStyle{Bold: true}
 	title.TextSize = 13
 
@@ -326,11 +339,11 @@ func (uw *unifiedWindow) buildAccountFooter() fyne.CanvasObject {
 		return "Stopped"
 	}())
 
-	handle := canvas.NewText(ghUser, cText)
+	handle := canvas.NewText(ghUser, theme.Color(theme.ColorNameForeground))
 	handle.TextSize = 12
 	handle.TextStyle = fyne.TextStyle{Bold: true}
 
-	sub := canvas.NewText("github.com", cTextMute)
+	sub := canvas.NewText("github.com", theme.Color(theme.ColorNamePlaceHolder))
 	sub.TextSize = 10
 	sub.TextStyle = fyne.TextStyle{Monospace: true}
 
@@ -347,7 +360,7 @@ func (uw *unifiedWindow) buildAccountFooter() fyne.CanvasObject {
 
 // thinDivider returns a 1px canvas line using the theme border color.
 func thinDivider() fyne.CanvasObject {
-	r := canvas.NewRectangle(cBorder)
+	r := canvas.NewRectangle(theme.Color(theme.ColorNameSeparator))
 	r.SetMinSize(fyne.NewSize(1, 1))
 	return r
 }
@@ -362,6 +375,7 @@ func markIconResource() fyne.Resource {
 // ── CODESPACE DETAIL ────────────────────────────────────────────────────
 
 func (uw *unifiedWindow) showCosmoCodespaceDetail(csName, repo string) {
+	uw.currentView = func() { uw.showCosmoCodespaceDetail(csName, repo) }
 	var cs *codespace.Codespace
 	for _, c := range uw.daemon.Codespaces() {
 		if c.Name == csName {
@@ -386,7 +400,7 @@ func (uw *unifiedWindow) showCosmoCodespaceDetail(csName, repo string) {
 	if titleText == "" {
 		titleText = cs.Name
 	}
-	heroTitle := canvas.NewText(titleText, cText)
+	heroTitle := canvas.NewText(titleText, theme.Color(theme.ColorNameForeground))
 	heroTitle.TextSize = 16
 	heroTitle.TextStyle = fyne.TextStyle{Bold: true}
 
@@ -590,28 +604,29 @@ func (uw *unifiedWindow) portRow(csName, repo string, port codespace.Port) fyne.
 func stateColor(state string) color.Color {
 	switch state {
 	case "Available", "Started", "ready", "running", "connected":
-		return cLime
+		return statusOK
 	case "Starting", "starting", "pending":
-		return cOrange
+		return statusWarn
 	case "Error":
-		return cRed
+		return statusError
 	}
-	return cTextMute
+	return theme.Color(theme.ColorNamePlaceHolder)
 }
 
 // ── WELCOME ─────────────────────────────────────────────────────────────
 
 func (uw *unifiedWindow) showCosmoWelcome() {
+	uw.currentView = uw.showCosmoWelcome
 	mark := canvas.NewImageFromResource(markIconResource())
 	mark.SetMinSize(fyne.NewSize(56, 56))
 	mark.FillMode = canvas.ImageFillContain
 
-	h := canvas.NewText("Welcome to Cosmonaut", cText)
+	h := canvas.NewText("Welcome to Cosmonaut", theme.Color(theme.ColorNameForeground))
 	h.TextSize = 16
 	h.TextStyle = fyne.TextStyle{Bold: true}
 	h.Alignment = fyne.TextAlignCenter
 
-	sub := canvas.NewText("Select a GitHub repo or Coder workspace to get started.", cTextMute)
+	sub := canvas.NewText("Select a GitHub repo or Coder workspace to get started.", theme.Color(theme.ColorNamePlaceHolder))
 	sub.TextSize = 12
 	sub.Alignment = fyne.TextAlignCenter
 
@@ -624,15 +639,16 @@ func (uw *unifiedWindow) showCosmoWelcome() {
 // ── REPO SUMMARY ───────────────────────────────────────────────────────
 
 func (uw *unifiedWindow) showCosmoRepoSummary(repo string) {
+	uw.currentView = func() { uw.showCosmoRepoSummary(repo) }
 	all := filterWorkspacesByProvider(uw.daemon.Workspaces(), provider.NameGitHub)
 	repoCS := provider.FilterByRepo(all, repo)
 
-	title := canvas.NewText(repo, cText)
+	title := canvas.NewText(repo, theme.Color(theme.ColorNameForeground))
 	title.TextSize = 18
 	title.TextStyle = fyne.TextStyle{Bold: true}
 
 	countText := fmt.Sprintf("%d workspace(s)", len(repoCS))
-	info := canvas.NewText(countText, cTextDim)
+	info := canvas.NewText(countText, theme.Color(theme.ColorNamePlaceHolder))
 	info.TextSize = 13
 
 	createBtn := primaryButton("Create new GitHub codespace", func() {
@@ -649,7 +665,8 @@ func (uw *unifiedWindow) showCosmoRepoSummary(repo string) {
 // ── CREATE ──────────────────────────────────────────────────────────────
 
 func (uw *unifiedWindow) showCreateNewGeneric() {
-	title := canvas.NewText("Create a new workspace", cText)
+	uw.currentView = uw.showCreateNewGeneric
+	title := canvas.NewText("Create a new workspace", theme.Color(theme.ColorNameForeground))
 	title.TextSize = 18
 	title.TextStyle = fyne.TextStyle{Bold: true}
 
@@ -677,13 +694,14 @@ func (uw *unifiedWindow) showCreateNewGeneric() {
 }
 
 func (uw *unifiedWindow) showCosmoCreateNew(repo string) {
+	uw.currentView = func() { uw.showCosmoCreateNew(repo) }
 	target, resolvedName := guiTargetForRepo(uw.daemon.Cfg, repo)
 
-	title := canvas.NewText("Create a new codespace", cText)
+	title := canvas.NewText("Create a new codespace", theme.Color(theme.ColorNameForeground))
 	title.TextSize = 18
 	title.TextStyle = fyne.TextStyle{Bold: true}
 
-	hint := canvas.NewText("A short label makes it easier to find later.", cTextMute)
+	hint := canvas.NewText("A short label makes it easier to find later.", theme.Color(theme.ColorNamePlaceHolder))
 	hint.TextSize = 12
 
 	repoLbl := widget.NewLabel(repo)
@@ -750,6 +768,7 @@ func (uw *unifiedWindow) showCosmoCreateNew(repo string) {
 }
 
 func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
+	uw.currentView = func() { uw.showCoderWorkspaceDetail(ws) }
 	target, resolvedName := guiTargetForCoderWorkspace(uw.daemon.Cfg, ws)
 
 	stateLbl := canvas.NewText(strings.ToUpper(ws.State), stateColor(ws.State))
@@ -761,11 +780,11 @@ func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
 	if title == "" {
 		title = ws.Name
 	}
-	heroTitle := canvas.NewText(title, cText)
+	heroTitle := canvas.NewText(title, theme.Color(theme.ColorNameForeground))
 	heroTitle.TextSize = 16
 	heroTitle.TextStyle = fyne.TextStyle{Bold: true}
 
-	subtitle := canvas.NewText("coder", cTextMute)
+	subtitle := canvas.NewText("coder", theme.Color(theme.ColorNamePlaceHolder))
 	subtitle.TextSize = 11
 	subtitle.TextStyle = fyne.TextStyle{Monospace: true}
 
@@ -1142,7 +1161,8 @@ func coderPortTargetName(cfg *config.Config, ws provider.Workspace, fallback str
 }
 
 func (uw *unifiedWindow) showCosmoCreateNewCoder() {
-	title := canvas.NewText("Create a new Coder workspace", cText)
+	uw.currentView = uw.showCosmoCreateNewCoder
+	title := canvas.NewText("Create a new Coder workspace", theme.Color(theme.ColorNameForeground))
 	title.TextSize = 18
 	title.TextStyle = fyne.TextStyle{Bold: true}
 

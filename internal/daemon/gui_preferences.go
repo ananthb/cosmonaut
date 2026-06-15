@@ -75,6 +75,10 @@ func (d *Daemon) showPreferences() {
 		win.SetFixedSize(true)
 		win.CenterOnScreen()
 		win.SetContent(d.buildSettingsPanel(win))
+		unsubscribeTheme := d.addThemeListener(func() {
+			win.SetContent(d.buildSettingsPanel(win))
+		})
+		win.SetOnClosed(unsubscribeTheme)
 		win.Show()
 	})
 }
@@ -135,13 +139,13 @@ func (d *Daemon) buildHealthRow(c doctor.Check, win fyne.Window, rebuild func())
 	var statusText string
 	switch {
 	case issue == nil:
-		dotColor = cLime
+		dotColor = statusOK
 		statusText = "OK"
 	case issue.Severity == doctor.SeverityError:
-		dotColor = cRed
+		dotColor = statusError
 		statusText = "Error"
 	default:
-		dotColor = cOrange
+		dotColor = statusWarn
 		statusText = "Warning"
 	}
 	dot := canvas.NewCircle(dotColor)

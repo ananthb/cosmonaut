@@ -10,6 +10,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -20,15 +21,15 @@ func stateDot(state string) *canvas.Circle {
 	var c color.Color
 	switch state {
 	case "Available":
-		c = cLime
+		c = statusOK
 	case "Starting":
-		c = cOrange
+		c = statusWarn
 	case "Stopped":
-		c = cTextFain
+		c = theme.Color(theme.ColorNameDisabled)
 	case "Error":
-		c = cRed
+		c = statusError
 	default:
-		c = cTextFain
+		c = theme.Color(theme.ColorNameDisabled)
 	}
 	dot := canvas.NewCircle(c)
 	dot.StrokeWidth = 0
@@ -39,7 +40,7 @@ func stateDot(state string) *canvas.Circle {
 // ── caption ─────────────────────────────────────────────────────────────
 // Small uppercase monospace section headers (e.g. "SSH CONNECTION").
 func caption(text string) *canvas.Text {
-	t := canvas.NewText(text, cTextMute)
+	t := canvas.NewText(text, theme.Color(theme.ColorNamePlaceHolder))
 	t.TextSize = 10
 	t.TextStyle = fyne.TextStyle{Monospace: true, Bold: true}
 	return t
@@ -49,8 +50,8 @@ func caption(text string) *canvas.Text {
 // Wraps content in a subtle surface with a 1px border: replaces Fyne's
 // default grey "card" style with something closer to the design.
 func surfaceCard(content fyne.CanvasObject) fyne.CanvasObject {
-	bg := canvas.NewRectangle(cSurface)
-	bg.StrokeColor = cBorder
+	bg := canvas.NewRectangle(theme.Color(theme.ColorNameOverlayBackground))
+	bg.StrokeColor = theme.Color(theme.ColorNameSeparator)
 	bg.StrokeWidth = 1
 	bg.CornerRadius = 6
 	return container.NewStack(bg, container.NewPadded(content))
