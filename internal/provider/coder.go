@@ -220,6 +220,14 @@ func (m *CoderManager) PrepareSSH(paths sshconfig.SSHPaths, workspace *Workspace
 	}
 	configPath := filepath.Join(paths.IncludeDir, "coder.conf")
 	args := []string{"config-ssh", "--yes", "--ssh-config-file", configPath}
+	// Coder defaults to writing os.Executable() into the ProxyCommand,
+	// which on nix is a /nix/store/<hash>/bin/.coder-wrapped path that
+	// gets GC'd when the package updates. Pin to the PATH-resolved entry
+	// (a stable symlink under /etc/profiles, /run/current-system, or
+	// ~/.nix-profile) so the SSH config survives store turnover.
+	if coderPath, err := exec.LookPath("coder"); err == nil {
+		args = append(args, "--coder-binary-path", coderPath)
+	}
 	if _, err := m.run(args...); err != nil {
 		return "", err
 	}
