@@ -179,7 +179,7 @@ func (d *Daemon) runCreateAndLaunch(win fyne.Window, target config.Target, resol
 
 // runLaunchFlow runs the SSH setup and editor launch sequence.
 func (d *Daemon) runLaunchFlow(win fyne.Window, target config.Target, resolvedName string, selected *provider.Workspace) {
-	manager, err := d.managerForTarget(target)
+	manager, err := d.managerForProvider(selected.Provider)
 	if err != nil {
 		showFlowError(win, err)
 		return
