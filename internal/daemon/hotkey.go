@@ -7,12 +7,10 @@ import (
 	"strings"
 
 	"golang.design/x/hotkey"
-
-	"github.com/linuskendall/cosmonaut/internal/history"
 )
 
-// defaultHotkey returns the platform default hotkey string.
-func defaultHotkey() string {
+// DefaultHotkey returns the platform default hotkey string.
+func DefaultHotkey() string {
 	if runtime.GOOS == "darwin" {
 		return "Cmd+Shift+S"
 	}
@@ -20,7 +18,7 @@ func defaultHotkey() string {
 }
 
 func (d *Daemon) startHotkeyListener() {
-	hotkeyStr := defaultHotkey()
+	hotkeyStr := DefaultHotkey()
 	if d.Cfg != nil && d.Cfg.Daemon != nil && d.Cfg.Daemon.Hotkey != "" {
 		hotkeyStr = d.Cfg.Daemon.Hotkey
 	}
@@ -54,50 +52,14 @@ func (d *Daemon) startHotkeyListener() {
 	}
 }
 
-// hotkeyAction determines what to do when the hotkey is pressed,
-// based on the daemon.hotkeyAction config: "picker" (default),
-// "previous" (most recent repo from history), or "default" (default target).
+// hotkeyAction launches the default target, falling back to the picker
+// when no default target is configured.
 func (d *Daemon) hotkeyAction() {
-	action := "picker"
-	if d.Cfg != nil && d.Cfg.Daemon != nil && d.Cfg.Daemon.HotkeyAction != "" {
-		action = d.Cfg.Daemon.HotkeyAction
-	}
-
-	switch action {
-	case "previous":
-		d.hotkeyActionPrevious()
-
-	case "default":
-		if d.Cfg != nil && d.Cfg.DefaultTarget != "" {
-			if _, ok := d.Cfg.Targets[d.Cfg.DefaultTarget]; ok {
-				d.showGUI(d.Cfg.DefaultTarget)
-				return
-			}
-		}
-		// No default target: fall through to picker.
+	if d.Cfg == nil || d.Cfg.DefaultTarget == "" {
 		d.showGUI()
-
-	default: // "picker"
-		d.showGUI()
-	}
-}
-
-// hotkeyActionPrevious launches the most recently used target from history,
-// falling back to the picker if there's no history.
-func (d *Daemon) hotkeyActionPrevious() {
-	hist := history.Load()
-	if len(hist.Entries) > 0 {
-		repo := hist.Entries[len(hist.Entries)-1].Repository
-		if name := d.targetNameForRepo(repo); name != "" {
-			d.showGUI(name)
-			return
-		}
-		// No config target: pass repo name directly so the child
-		// process can skip the repo selector TUI.
-		d.showGUI(repo)
 		return
 	}
-	d.showGUI()
+	d.launchDefaultTarget()
 }
 
 // parseHotkeyString converts a string like "Cmd+Shift+S" to hotkey modifiers and key.

@@ -178,9 +178,9 @@ func (c *Config) EnsureDaemon() DaemonConfig {
 	return snap
 }
 
-// SetDaemonHotkeyAction persists the daemon HotkeyAction field. Daemon is
-// auto-created if nil.
-func (c *Config) SetDaemonHotkeyAction(action string) {
+// SetDaemonHotkey persists the daemon Hotkey field. Daemon is auto-created
+// if nil. An empty string falls back to the platform default at register time.
+func (c *Config) SetDaemonHotkey(hotkey string) {
 	if c == nil {
 		return
 	}
@@ -189,7 +189,7 @@ func (c *Config) SetDaemonHotkeyAction(action string) {
 	if c.Daemon == nil {
 		c.Daemon = &DaemonConfig{}
 	}
-	c.Daemon.HotkeyAction = action
+	c.Daemon.Hotkey = hotkey
 }
 
 // SetDaemonInhibitSleep persists the daemon InhibitSleep field. Daemon is
@@ -264,7 +264,6 @@ type CoderProviderConfig struct {
 // DaemonConfig holds settings for the background daemon (tray, hotkey, poller).
 type DaemonConfig struct {
 	Hotkey       string `json:"hotkey,omitempty"`       // e.g. "Cmd+Shift+S" (macOS) or "Ctrl+Shift+S" (Linux)
-	HotkeyAction string `json:"hotkeyAction,omitempty"` // "picker" (default), "previous", or "default"
 	Terminal     string `json:"terminal,omitempty"`     // terminal app to launch picker in; "auto" to detect
 	InhibitSleep string `json:"inhibitSleep,omitempty"` // "off" (default), "sleep", or "sleep+shutdown"
 }
@@ -428,7 +427,6 @@ var TargetFieldDocs = []FieldDoc{
 // DaemonFieldDocs is the authoritative documentation for DaemonConfig fields.
 var DaemonFieldDocs = []FieldDoc{
 	{"hotkey", "string", false, "Global hotkey (e.g. Cmd+Shift+S)"},
-	{"hotkeyAction", "string", false, "Hotkey behavior: picker (default), previous, or default"},
 	{"terminal", "string", false, "Terminal app for picker; auto to detect"},
 	{"inhibitSleep", "string", false, "Hold sleep/shutdown inhibitor while a codespace session is active: off (default), sleep, or sleep+shutdown"},
 }

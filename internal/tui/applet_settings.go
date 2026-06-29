@@ -11,6 +11,7 @@ import (
 
 	"github.com/linuskendall/cosmonaut/internal/codespace"
 	"github.com/linuskendall/cosmonaut/internal/config"
+	"github.com/linuskendall/cosmonaut/internal/daemon"
 	"github.com/linuskendall/cosmonaut/internal/doctor"
 	"github.com/linuskendall/cosmonaut/internal/terminal"
 )
@@ -22,10 +23,13 @@ const (
 	secHealth settingsSection = iota
 	secAuth
 	secEditor
+	secHotkey
 	secDaemon
 	secTarget
 	secActions
 )
+
+const numSections = 7
 
 // settingsModel mirrors the GUI's Preferences page: health checks (with
 // inline fix), GitHub auth, editor entry, daemon options, default-target
@@ -35,8 +39,7 @@ type settingsModel struct {
 
 	healthCursor int
 	editorInput  textinput.Model
-	daemonField  int // 0=hotkeyAction, 1=inhibitSleep
-	daemonHotkey int
+	hotkeyInput  textinput.Model
 	daemonSleep  int
 	targetField  int // 0=autoStop, 1=preWarm
 	targetStop   int
@@ -50,6 +53,11 @@ func newSettingsModel(d *AppletData) settingsModel {
 	ed.CharLimit = 80
 	ed.Width = 40
 	m.editorInput = ed
+	hk := textinput.New()
+	hk.Placeholder = daemon.DefaultHotkey() + " (default)"
+	hk.CharLimit = 40
+	hk.Width = 40
+	m.hotkeyInput = hk
 	m.syncFromConfig(d.Config())
 	return m
 }
@@ -57,13 +65,12 @@ func newSettingsModel(d *AppletData) settingsModel {
 func (m *settingsModel) syncFromConfig(cfg *config.Config) {
 	m.editorInput.SetValue(cfg.Editor)
 
-	hotkeyActions := []string{"picker", "previous", "default"}
 	sleepActions := []string{"off", "sleep", "sleep+shutdown"}
 	dm := cfg.Daemon
 	if dm == nil {
 		dm = &config.DaemonConfig{}
 	}
-	m.daemonHotkey = indexOf(hotkeyActions, defaultStr(dm.HotkeyAction, "picker"))
+	m.hotkeyInput.SetValue(dm.Hotkey)
 	m.daemonSleep = indexOf(sleepActions, defaultStr(dm.InhibitSleep, "off"))
 
 	stops := []string{"off", "15m", "30m", "1h"}
@@ -118,13 +125,13 @@ func (m settingsModel) handleKey(msg tea.KeyMsg, d *AppletData) (settingsModel, 
 		case "tab":
 			d.Config().Editor = strings.TrimSpace(m.editorInput.Value())
 			cmd := m.persistAndAck(d)
-			m.section = (m.section + 1) % 6
+			m.section = (m.section + 1) % numSections
 			m.editorInput.Blur()
 			return m, cmd
 		case "shift+tab":
 			d.Config().Editor = strings.TrimSpace(m.editorInput.Value())
 			cmd := m.persistAndAck(d)
-			m.section = (m.section + 5) % 6
+			m.section = (m.section + numSections - 1) % numSections
 			m.editorInput.Blur()
 			return m, cmd
 		default:
@@ -137,14 +144,42 @@ func (m settingsModel) handleKey(msg tea.KeyMsg, d *AppletData) (settingsModel, 
 		}
 	}
 
+	if m.section == secHotkey {
+		switch key {
+		case "esc":
+			m.persistHotkey(d)
+			cmd := m.persistAndAck(d)
+			return m, tea.Batch(cmd, switchTo(viewList, nil))
+		case "tab":
+			m.persistHotkey(d)
+			cmd := m.persistAndAck(d)
+			m.section = (m.section + 1) % numSections
+			m.hotkeyInput.Blur()
+			return m, cmd
+		case "shift+tab":
+			m.persistHotkey(d)
+			cmd := m.persistAndAck(d)
+			m.section = (m.section + numSections - 1) % numSections
+			m.hotkeyInput.Blur()
+			return m, cmd
+		default:
+			if !m.hotkeyInput.Focused() {
+				m.hotkeyInput.Focus()
+			}
+			var cmd tea.Cmd
+			m.hotkeyInput, cmd = m.hotkeyInput.Update(msg)
+			return m, cmd
+		}
+	}
+
 	switch key {
 	case "esc":
 		return m, switchTo(viewList, nil)
 	case "tab":
-		m.section = (m.section + 1) % 6
+		m.section = (m.section + 1) % numSections
 		return m, nil
 	case "shift+tab":
-		m.section = (m.section + 5) % 6
+		m.section = (m.section + numSections - 1) % numSections
 		return m, nil
 	case "up", "k":
 		m = m.moveCursor(-1, d)
@@ -171,7 +206,7 @@ func (m settingsModel) moveCursor(delta int, d *AppletData) settingsModel {
 		}
 		m.healthCursor = wrapDetail(m.healthCursor+delta, n)
 	case secDaemon:
-		m.daemonField = wrapDetail(m.daemonField+delta, 2)
+		// Single row (Inhibit sleep) — no vertical movement.
 	case secTarget:
 		m.targetField = wrapDetail(m.targetField+delta, 2)
 	}
@@ -189,16 +224,9 @@ func (m settingsModel) cycleValue(delta int, d *AppletData) settingsModel {
 		if d.Config().Daemon == nil {
 			d.Config().Daemon = &config.DaemonConfig{}
 		}
-		switch m.daemonField {
-		case 0:
-			actions := []string{"picker", "previous", "default"}
-			m.daemonHotkey = wrapDetail(m.daemonHotkey+delta, len(actions))
-			d.Config().Daemon.HotkeyAction = actions[m.daemonHotkey]
-		case 1:
-			modes := []string{"off", "sleep", "sleep+shutdown"}
-			m.daemonSleep = wrapDetail(m.daemonSleep+delta, len(modes))
-			d.Config().Daemon.InhibitSleep = modes[m.daemonSleep]
-		}
+		modes := []string{"off", "sleep", "sleep+shutdown"}
+		m.daemonSleep = wrapDetail(m.daemonSleep+delta, len(modes))
+		d.Config().Daemon.InhibitSleep = modes[m.daemonSleep]
 	case secTarget:
 		if d.Config().DefaultTarget == "" {
 			return m
@@ -229,13 +257,17 @@ func (m settingsModel) cycleValue(delta int, d *AppletData) settingsModel {
 
 func (m settingsModel) persistAndAck(d *AppletData) tea.Cmd {
 	switch m.section {
-	case secEditor, secDaemon, secTarget:
+	case secEditor, secHotkey, secDaemon, secTarget:
 		if err := d.PersistConfig(); err != nil {
 			return emitFlash("save: "+err.Error(), true)
 		}
 		return emitFlash("Saved", false)
 	}
 	return nil
+}
+
+func (m *settingsModel) persistHotkey(d *AppletData) {
+	d.Config().SetDaemonHotkey(strings.TrimSpace(m.hotkeyInput.Value()))
 }
 
 func (m settingsModel) activate(d *AppletData) (settingsModel, tea.Cmd) {
@@ -302,6 +334,7 @@ func (m settingsModel) view(d *AppletData, width, height int) string {
 	b.WriteString(m.renderHealth(d) + "\n")
 	b.WriteString(m.renderAuth(d) + "\n")
 	b.WriteString(m.renderEditor(d) + "\n")
+	b.WriteString(m.renderHotkey(d) + "\n")
 	b.WriteString(m.renderDaemon(d) + "\n")
 	b.WriteString(m.renderTarget(d) + "\n")
 	b.WriteString(m.renderActions(d) + "\n")
@@ -376,30 +409,24 @@ func (m settingsModel) renderEditor(_ *AppletData) string {
 		dimStyle.Render("any binary on PATH; empty = zed default"))
 }
 
+func (m settingsModel) renderHotkey(_ *AppletData) string {
+	header := m.sectionHeader("HOTKEY", secHotkey)
+	return fmt.Sprintf("%s\n  %s\n  %s", header, m.hotkeyInput.View(),
+		dimStyle.Render("e.g. Cmd+Shift+S; empty = platform default"))
+}
+
 func (m settingsModel) renderDaemon(d *AppletData) string {
 	header := m.sectionHeader("DAEMON", secDaemon)
-	actions := []string{"picker", "previous", "default"}
 	modes := []string{"off", "sleep", "sleep+shutdown"}
-	rows := [][2]string{
-		{"Hotkey action", actions[m.daemonHotkey]},
-		{"Inhibit sleep", modes[m.daemonSleep]},
+	label := "Inhibit sleep"
+	value := modes[m.daemonSleep]
+	cursor := "  "
+	if m.section == secDaemon {
+		cursor = cursorStyle.Render("> ")
+		value = selectedStyle.Render("‹ " + value + " ›")
+		label = selectedStyle.Render(label)
 	}
-	var lines []string
-	lines = append(lines, header)
-	for i, r := range rows {
-		cursor := "  "
-		if m.section == secDaemon && i == m.daemonField {
-			cursor = cursorStyle.Render("> ")
-		}
-		label := r[0]
-		value := r[1]
-		if m.section == secDaemon && i == m.daemonField {
-			value = selectedStyle.Render("‹ " + value + " ›")
-			label = selectedStyle.Render(label)
-		}
-		lines = append(lines, fmt.Sprintf("%s%s  %s", cursor, padRight(label, 16), value))
-	}
-	return strings.Join(lines, "\n")
+	return header + "\n" + fmt.Sprintf("%s%s  %s", cursor, padRight(label, 16), value)
 }
 
 func (m settingsModel) renderTarget(d *AppletData) string {

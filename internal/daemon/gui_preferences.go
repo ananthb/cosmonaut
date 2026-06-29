@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"log"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -304,15 +305,13 @@ func (d *Daemon) buildEditorSection() fyne.CanvasObject {
 func (d *Daemon) buildDaemonSection() fyne.CanvasObject {
 	daemon := d.Cfg.EnsureDaemon()
 
-	currentAction := daemon.HotkeyAction
-	if currentAction == "" {
-		currentAction = "picker"
-	}
-	actionSelect := widget.NewSelect([]string{"picker", "previous", "default"}, func(val string) {
-		d.Cfg.SetDaemonHotkeyAction(val)
+	hotkeyEntry := widget.NewEntry()
+	hotkeyEntry.SetPlaceHolder(DefaultHotkey())
+	hotkeyEntry.SetText(daemon.Hotkey)
+	hotkeyEntry.OnSubmitted = func(val string) {
+		d.Cfg.SetDaemonHotkey(strings.TrimSpace(val))
 		d.persistConfig()
-	})
-	actionSelect.Selected = currentAction
+	}
 
 	currentInhibit := daemon.InhibitSleep
 	if currentInhibit == "" {
@@ -328,7 +327,7 @@ func (d *Daemon) buildDaemonSection() fyne.CanvasObject {
 	inhibitSelect.Selected = currentInhibit
 
 	return widget.NewForm(
-		widget.NewFormItem("Hotkey action", actionSelect),
+		widget.NewFormItem("Hotkey", hotkeyEntry),
 		widget.NewFormItem("Inhibit sleep", inhibitSelect),
 	)
 }

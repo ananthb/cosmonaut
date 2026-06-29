@@ -183,7 +183,6 @@ let
     }) cfg.targets;
     daemon = lib.optionalAttrs cfg.daemon.enable (filterNulls {
       hotkey = cfg.daemon.hotkey;
-      hotkeyAction = cfg.daemon.hotkeyAction;
       terminal = cfg.daemon.terminal;
       pollInterval = cfg.daemon.pollInterval;
       inhibitSleep = cfg.daemon.inhibitSleep;
@@ -253,17 +252,6 @@ in
         type = lib.types.nullOr lib.types.str;
         default = if pkgs.stdenv.isDarwin then "Cmd+Shift+S" else "Ctrl+Shift+S";
         description = "Global hotkey to open the codespace picker.";
-      };
-
-      hotkeyAction = lib.mkOption {
-        type = lib.types.enum [ "picker" "previous" "default" ];
-        default = "picker";
-        description = ''
-          What the hotkey does:
-          - "picker": open the interactive repo/codespace picker
-          - "previous": launch the most recently used target
-          - "default": launch the default target from config
-        '';
       };
 
       terminal = lib.mkOption {

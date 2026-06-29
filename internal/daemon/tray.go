@@ -73,15 +73,9 @@ func (d *Daemon) buildTrayMenu() *fyne.Menu {
 		items = append(items, coderItem)
 	}
 
-	// Open previous / launch.
-	hist := history.Load()
+	// Launch default target.
 	if len(items) > 0 {
 		items = append(items, fyne.NewMenuItemSeparator())
-	}
-	if len(hist.Entries) > 0 {
-		items = append(items, fyne.NewMenuItem("Open previous", func() {
-			go d.hotkeyActionPrevious()
-		}))
 	}
 	launchItem := fyne.NewMenuItem("Launch", func() {
 		go d.launchDefaultTarget()
