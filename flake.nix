@@ -61,8 +61,15 @@
 
           vendorHash = "sha256-Hc22uW6Eq1tY567WipjS8GCPWNJcT9Db5Wpovs/MAdU=";
 
-          CGO_ENABLED = 1; # Moved to top-level for better type safety
+          env.CGO_ENABLED = 1;
           tags = [ "netgo" ];
+
+          # cctools ld (the darwin stdenv default) segfaults linking the
+          # fyne/objc-heavy binary against nixpkgs >= 26.11's clang 21 / Go 1.26
+          # toolchain. lld links it fine.
+          ldflags = pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            "-extldflags=-fuse-ld=lld"
+          ];
 
           nativeBuildInputs = [
             pkgs.makeWrapper
@@ -70,28 +77,22 @@
             pkgs.pkg-config
           ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
             pkgs.xvfb-run
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            pkgs.lld
           ];
 
           checkPhase = ''
             runHook preCheck
             export GOFLAGS=''${GOFLAGS//-trimpath/}
-            ${pkgs.lib.optionalString pkgs.stdenv.isLinux "xvfb-run -a "}go test -tags=netgo ./...
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux "xvfb-run -a "}go test -tags=netgo ${
+              pkgs.lib.optionalString pkgs.stdenv.isDarwin ''-ldflags="-extldflags=-fuse-ld=lld" ''
+            }./...
             runHook postCheck
           '';
 
-          buildInputs = [ pkgs.libiconv ] 
-            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk.frameworks; [
-              Cocoa
-              Carbon
-              IOKit
-              OpenGL
-              CoreVideo
-              Security
-              UserNotifications
-              Foundation
-              AppKit
-              CoreFoundation
-            ]) ++ cgoLinuxLibs;
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            pkgs.apple-sdk
+          ] ++ cgoLinuxLibs;
 
           postInstall = ''
             wrapProgram $out/bin/cosmonaut \
