@@ -110,18 +110,18 @@
             runHook postCheck
           '';
 
-          buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin (with pkgs; [
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.frameworks; [
             libiconv
-            darwin.apple_sdk.frameworks.Cocoa
-            darwin.apple_sdk.frameworks.Carbon
-            darwin.apple_sdk.frameworks.IOKit
-            darwin.apple_sdk.frameworks.OpenGL
-            darwin.apple_sdk.frameworks.CoreVideo
-            darwin.apple_sdk.frameworks.Security
-            darwin.apple_sdk.frameworks.UserNotifications
-            darwin.apple_sdk.frameworks.Foundation
-            darwin.apple_sdk.frameworks.AppKit
-            darwin.apple_sdk.frameworks.CoreFoundation
+            Cocoa
+            Carbon
+            IOKit
+            OpenGL
+            CoreVideo
+            Security
+            UserNotifications
+            Foundation
+            AppKit
+            CoreFoundation
           ]) ++ cgoLinuxLibs;
 
           postInstall = ''
