@@ -110,19 +110,19 @@
             runHook postCheck
           '';
 
-          buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.frameworks; [
-            libiconv
-            Cocoa
-            Carbon
-            IOKit
-            OpenGL
-            CoreVideo
-            Security
-            UserNotifications
-            Foundation
-            AppKit
-            CoreFoundation
-          ]) ++ cgoLinuxLibs;
+          buildInputs = [ pkgs.libiconv ] 
+            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk.frameworks; [
+              Cocoa
+              Carbon
+              IOKit
+              OpenGL
+              CoreVideo
+              Security
+              UserNotifications
+              Foundation
+              AppKit
+              CoreFoundation
+            ]) ++ cgoLinuxLibs;
 
           postInstall = ''
             wrapProgram $out/bin/cosmonaut \
