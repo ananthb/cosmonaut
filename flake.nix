@@ -114,8 +114,17 @@
             mkdir -p "$out/Applications/Cosmonaut.app/Contents/Resources"
             cp $src/dist/Info.plist "$out/Applications/Cosmonaut.app/Contents/Info.plist"
             cp $src/assets/logo.icns "$out/Applications/Cosmonaut.app/Contents/Resources/icon.icns"
-            # Copy the wrapped script, not the bare binary
-            cp $out/bin/cosmonaut "$out/Applications/Cosmonaut.app/Contents/MacOS/cosmonaut"
+            # The bundle executable MUST be the real Mach-O binary, not the
+            # makeWrapper shell script. A GUI applet relies on
+            # [[NSBundle mainBundle]] resolving from its running executable's
+            # path up to Foo.app/Contents/MacOS. The wrapper re-execs the real
+            # binary out of $out/bin/.cosmonaut-wrapped, which lives outside any
+            # .app layout, so mainBundle fails to resolve, LSUIElement is
+            # ignored, and the applet gets a generic Dock tile named
+            # ".cosmonaut-wrapped" instead of staying menu-bar-only.
+            # gh reaches the daemon via the login-shell PATH merge at runtime,
+            # so the bundle does not need the gh wrapper.
+            cp $out/bin/.cosmonaut-wrapped "$out/Applications/Cosmonaut.app/Contents/MacOS/cosmonaut"
           '';
 
           meta = with pkgs.lib; {
