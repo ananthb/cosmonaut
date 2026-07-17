@@ -21,6 +21,14 @@ func TestShellQuote(t *testing.T) {
 		{"path with dollar", "/tmp/$HOME", "'/tmp/$HOME'"},
 		{"path with semicolon", "/tmp/a;rm -rf /", "'/tmp/a;rm -rf /'"},
 		{"path with backtick", "/tmp/`whoami`", "'/tmp/`whoami`'"},
+		// The blocklist regressions: newline injected a second remote
+		// command, leading ~ tilde-expanded, # started a comment.
+		{"path with newline", "/tmp/x\nrm -rf ~", "'/tmp/x\nrm -rf ~'"},
+		{"path with carriage return", "/tmp/x\rls", "'/tmp/x\rls'"},
+		{"leading tilde", "~/project", "'~/project'"},
+		{"hash comment", "/tmp/a#b", "'/tmp/a#b'"},
+		{"non-ascii", "/tmp/ürlaub", "'/tmp/ürlaub'"},
+		{"allowlisted punctuation", "user@host:a,b%c+d=e-f_g.h/i", "user@host:a,b%c+d=e-f_g.h/i"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -77,15 +77,28 @@ end run`
 }
 
 // ShellQuote wraps s in POSIX single quotes so it can be safely embedded in
-// a shell command. Empty strings return `”`; strings containing no shell
-// metacharacters are returned unchanged for readability. Embedded single
-// quotes are escaped via the `'\”` idiom.
+// a shell command. Empty strings return `''`. Embedded single quotes are
+// escaped via the `'\''` idiom.
+//
+// Strings are returned bare only when every byte is on a conservative
+// allowlist. The old implementation blocklisted known metacharacters and
+// missed newline — so a workspace path like "/tmp/x\nrm -rf ~" passed
+// through unquoted and the remote shell executed the second line as its
+// own command — as well as `~` (tilde expansion) and `#` (comment start).
+// An allowlist can't miss the next dangerous byte.
 func ShellQuote(s string) string {
 	if s == "" {
 		return "''"
 	}
-	if !strings.ContainsAny(s, " \t\"'$`\\!*?[]{}<>|&;()") {
-		return s
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '_' || c == '@' || c == '%' || c == '+' || c == '=' ||
+			c == ':' || c == ',' || c == '.' || c == '/' || c == '-':
+		default:
+			return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+		}
 	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	return s
 }
