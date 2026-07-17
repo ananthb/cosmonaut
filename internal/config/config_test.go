@@ -156,3 +156,83 @@ func TestLoadCoderConfig(t *testing.T) {
 		t.Fatalf("coder port forwards = %+v", target.Coder.PortForwards)
 	}
 }
+
+func TestTargetCloneIsDeep(t *testing.T) {
+	up := true
+	orig := Target{
+		Repository:          "acme/demo",
+		UploadBinaryOverSSH: &up,
+		Coder: &CoderTargetConfig{
+			WorkspaceName: "ws",
+			Parameters:    map[string]string{"repo": "acme/demo"},
+			PortForwards:  []PortForward{{RemotePort: 3000, LocalPort: 3000}},
+		},
+	}
+	cp := orig.Clone()
+	cp.Coder.WorkspaceName = "changed"
+	cp.Coder.Parameters["repo"] = "changed"
+	cp.Coder.PortForwards[0].RemotePort = 9999
+	*cp.UploadBinaryOverSSH = false
+
+	if orig.Coder.WorkspaceName != "ws" {
+		t.Fatal("Clone shares Coder pointer")
+	}
+	if orig.Coder.Parameters["repo"] != "acme/demo" {
+		t.Fatal("Clone shares Parameters map")
+	}
+	if orig.Coder.PortForwards[0].RemotePort != 3000 {
+		t.Fatal("Clone shares PortForwards slice")
+	}
+	if !*orig.UploadBinaryOverSSH {
+		t.Fatal("Clone shares UploadBinaryOverSSH pointer")
+	}
+}
+
+func TestUpdateTargetReportsExistence(t *testing.T) {
+	cfg := &Config{}
+	cfg.UpdateTarget("new", func(tg *Target, exists bool) {
+		if exists {
+			t.Error("target should not exist yet")
+		}
+		tg.Repository = "acme/demo"
+	})
+	cfg.UpdateTarget("new", func(tg *Target, exists bool) {
+		if !exists {
+			t.Error("target should exist now")
+		}
+		if tg.Repository != "acme/demo" {
+			t.Errorf("repository = %q", tg.Repository)
+		}
+	})
+}
+
+// TestConfigConcurrentAccess exercises the accessor surface from many
+// goroutines at once; it exists to fail under `go test -race` if any
+// accessor touches shared state without the mutex.
+func TestConfigConcurrentAccess(t *testing.T) {
+	cfg := &Config{Targets: map[string]Target{
+		"work": {Repository: "acme/demo", Coder: &CoderTargetConfig{WorkspaceName: "ws"}},
+	}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 500; i++ {
+			cfg.UpdateTarget("work", func(tg *Target, _ bool) {
+				tg.Coder.PortForwards = append(tg.Coder.PortForwards, PortForward{RemotePort: i})
+			})
+			cfg.SetDaemonInhibitSleep("sleep")
+			cfg.SetEditor("zed")
+		}
+	}()
+	for i := 0; i < 500; i++ {
+		for range cfg.TargetsSnapshot() {
+		}
+		_, _ = cfg.Target("work")
+		_ = cfg.GetDefaultTarget()
+		_ = cfg.GetEditor()
+		_ = cfg.CoderOrganization()
+		_ = cfg.EnsureDaemon()
+		_ = cfg.EffectiveWorkspaceProvider()
+	}
+	<-done
+}

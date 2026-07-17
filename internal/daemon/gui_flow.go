@@ -113,10 +113,8 @@ func (d *Daemon) showGUI(args ...string) {
 // resolveGUITarget resolves a target argument to a config Target.
 func (d *Daemon) resolveGUITarget(arg string) (config.Target, string) {
 	if arg != "" && !isRepoLike(arg) {
-		if d.Cfg != nil {
-			if t, ok := d.Cfg.Targets[arg]; ok {
-				return t, arg
-			}
+		if t, ok := d.Cfg.Target(arg); ok {
+			return t, arg
 		}
 	}
 	return guiTargetForRepo(d.Cfg, arg)
@@ -133,10 +131,7 @@ func isRepoLike(s string) bool {
 
 // getEditor returns the configured editor implementation.
 func (d *Daemon) getEditor() editor.Editor {
-	editorName := ""
-	if d.Cfg != nil {
-		editorName = d.Cfg.Editor
-	}
+	editorName := d.Cfg.GetEditor()
 	ed, err := editor.ForName(editorName)
 	if err != nil {
 		log.Printf("editor: %v, falling back to zed", err)
@@ -272,12 +267,12 @@ func (d *Daemon) runLaunchFlow(win fyne.Window, target config.Target, resolvedNa
 // preselected on the target so the user can finish the selection.
 // Safe to call from any goroutine.
 func (d *Daemon) launchDefaultTarget() {
-	if d.Cfg == nil || d.Cfg.DefaultTarget == "" {
+	targetName := d.Cfg.GetDefaultTarget()
+	if targetName == "" {
 		d.notify("No default target configured")
 		return
 	}
-	targetName := d.Cfg.DefaultTarget
-	target, ok := d.Cfg.Targets[targetName]
+	target, ok := d.Cfg.Target(targetName)
 	if !ok {
 		d.notify(fmt.Sprintf("Default target %q not found in config", targetName))
 		return

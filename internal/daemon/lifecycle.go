@@ -50,7 +50,7 @@ func (d *Daemon) startPreWarm() {
 		return
 	}
 
-	for name, target := range d.Cfg.Targets {
+	for name, target := range d.Cfg.TargetsSnapshot() {
 		if target.PreWarm == "" {
 			continue
 		}
@@ -140,13 +140,11 @@ func (d *Daemon) detectStateChanges(old, new []codespace.Codespace) {
 	}
 }
 
-// findTargetForCodespace finds the config target that matches a codespace's repository.
+// findTargetForCodespace finds the config target that matches a codespace's
+// repository. The returned pointer is to a snapshot copy, not the live config.
 func (d *Daemon) findTargetForCodespace(cs *codespace.Codespace) *config.Target {
-	if d.Cfg == nil {
-		return nil
-	}
 	repo := string(cs.Repository)
-	for _, t := range d.Cfg.Targets {
+	for _, t := range d.Cfg.TargetsSnapshot() {
 		if t.Repository == repo {
 			return &t
 		}

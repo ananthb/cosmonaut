@@ -146,12 +146,16 @@ type PollResult struct {
 func (d *AppletData) Poll() PollResult {
 	d.mu.Lock()
 	if d.pollInFlight {
-		d.mu.Unlock()
 		// Another caller is already polling. Return the cached snapshot so
 		// the UI can keep rendering rather than blocking on the slot.
+		// listErr must be read while still holding the lock — the in-flight
+		// poll writes it concurrently.
+		listErr := d.listErr
+		workspaces := append([]provider.Workspace(nil), d.workspaces...)
+		d.mu.Unlock()
 		return PollResult{
-			Workspaces: d.Workspaces(),
-			ListErr:    d.listErr,
+			Workspaces: workspaces,
+			ListErr:    listErr,
 		}
 	}
 	d.pollInFlight = true

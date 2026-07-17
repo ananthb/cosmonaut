@@ -90,12 +90,9 @@ func newCreateModel(d *AppletData) createModel {
 
 	// Inventory Coder targets (those with a Coder block) for the
 	// template picker; create is only meaningful against one of these.
-	cfg := d.Config()
-	if cfg != nil {
-		for name, t := range cfg.Targets {
-			if t.Coder != nil {
-				m.coderTargets = append(m.coderTargets, name)
-			}
+	for name, t := range d.Config().TargetsSnapshot() {
+		if t.Coder != nil {
+			m.coderTargets = append(m.coderTargets, name)
 		}
 	}
 
@@ -366,12 +363,10 @@ func (m createModel) buildTarget(d *AppletData) (config.Target, error) {
 		target := config.Target{Repository: repo}
 		// If the user has a config target for this repo, inherit machine,
 		// location, etc. so the new codespace lines up with their defaults.
-		if cfg := d.Config(); cfg != nil {
-			for _, t := range cfg.Targets {
-				if t.Repository == repo {
-					target = t
-					break
-				}
+		for _, t := range d.Config().TargetsSnapshot() {
+			if t.Repository == repo {
+				target = t
+				break
 			}
 		}
 		if label := strings.TrimSpace(m.labelInput.Value()); label != "" {
@@ -383,7 +378,7 @@ func (m createModel) buildTarget(d *AppletData) (config.Target, error) {
 			return config.Target{}, fmt.Errorf("no config target with a coder block — edit config first")
 		}
 		name := m.coderTargets[m.coderIdx]
-		target := d.Config().Targets[name]
+		target, _ := d.Config().Target(name)
 		if wsName := strings.TrimSpace(m.nameInput.Value()); wsName != "" {
 			if target.Coder == nil {
 				target.Coder = &config.CoderTargetConfig{}
@@ -467,7 +462,7 @@ func (m createModel) renderCoderForm(d *AppletData) string {
 		return errorStyle.Render("No config target with a coder block — edit config first.")
 	}
 	target := m.coderTargets[m.coderIdx]
-	t := d.Config().Targets[target]
+	t, _ := d.Config().Target(target)
 	tplName := ""
 	if t.Coder != nil {
 		tplName = t.Coder.Template

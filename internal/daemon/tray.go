@@ -80,7 +80,7 @@ func (d *Daemon) buildTrayMenu() *fyne.Menu {
 	launchItem := fyne.NewMenuItem("Launch", func() {
 		go d.launchDefaultTarget()
 	})
-	if d.Cfg == nil || d.Cfg.DefaultTarget == "" {
+	if d.Cfg.GetDefaultTarget() == "" {
 		launchItem.Disabled = true
 	}
 	items = append(items, launchItem)
@@ -492,10 +492,7 @@ func csLabel(cs codespace.Codespace) string {
 
 // targetNameForRepo returns the config target name for a repo, or empty string.
 func (d *Daemon) targetNameForRepo(repo string) string {
-	if d.Cfg == nil {
-		return ""
-	}
-	for name, t := range d.Cfg.Targets {
+	for name, t := range d.Cfg.TargetsSnapshot() {
 		if t.Repository == repo {
 			return name
 		}

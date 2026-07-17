@@ -206,8 +206,11 @@ func (c *Config) SetDaemonInhibitSleep(mode string) {
 	c.Daemon.InhibitSleep = mode
 }
 
-// Target returns a copy of the named target, or the zero value with ok=false
-// when no such target is configured.
+// Target returns a deep copy of the named target, or the zero value with
+// ok=false when no such target is configured. The copy shares no pointers
+// with the live config, so callers may freely mutate it (e.g. to stage a
+// launch override) without racing concurrent readers or leaking the change
+// back into the config.
 func (c *Config) Target(name string) (Target, bool) {
 	if c == nil {
 		return Target{}, false
@@ -215,11 +218,51 @@ func (c *Config) Target(name string) (Target, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	t, ok := c.Targets[name]
-	return t, ok
+	return t.Clone(), ok
 }
 
-// SetTarget writes a target into the Targets map. The Targets map is
-// auto-created if nil.
+// GetDefaultTarget returns the DefaultTarget name under the read lock.
+func (c *Config) GetDefaultTarget() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.DefaultTarget
+}
+
+// CoderOrganization returns Providers.Coder.Organization under the read lock.
+func (c *Config) CoderOrganization() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Providers.Coder.Organization
+}
+
+// TargetsSnapshot returns a deep copy of the Targets map taken under the
+// read lock. Safe to iterate or mutate without further locking; mutations
+// do not affect the live config.
+func (c *Config) TargetsSnapshot() map[string]Target {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.Targets == nil {
+		return nil
+	}
+	snap := make(map[string]Target, len(c.Targets))
+	for name, t := range c.Targets {
+		snap[name] = t.Clone()
+	}
+	return snap
+}
+
+// SetTarget writes a deep copy of t into the Targets map, so later caller
+// mutations of t (or its Coder sub-struct) can't reach into the live config.
+// The Targets map is auto-created if nil.
 func (c *Config) SetTarget(name string, t Target) {
 	if c == nil {
 		return
@@ -229,14 +272,15 @@ func (c *Config) SetTarget(name string, t Target) {
 	if c.Targets == nil {
 		c.Targets = map[string]Target{}
 	}
-	c.Targets[name] = t
+	c.Targets[name] = t.Clone()
 }
 
 // UpdateTarget performs a read-modify-write on the named target atomically.
-// The callback receives a pointer to the live target value; whatever it
-// stores is written back. If the target doesn't exist, a zero-value Target
-// is passed and stored on return. The Targets map is auto-created if nil.
-func (c *Config) UpdateTarget(name string, fn func(*Target)) {
+// The callback receives a deep copy of the target (so mutating nested
+// pointers like Coder never aliases the live config) plus whether the target
+// already existed; whatever the callback leaves in *t is written back. The
+// Targets map is auto-created if nil.
+func (c *Config) UpdateTarget(name string, fn func(t *Target, exists bool)) {
 	if c == nil {
 		return
 	}
@@ -245,9 +289,12 @@ func (c *Config) UpdateTarget(name string, fn func(*Target)) {
 	if c.Targets == nil {
 		c.Targets = map[string]Target{}
 	}
-	t := c.Targets[name]
-	fn(&t)
-	c.Targets[name] = t
+	cur, ok := c.Targets[name]
+	t := cur.Clone()
+	fn(&t, ok)
+	// Clone again on the way back in: the callback may have replaced *t
+	// wholesale with a value that shares pointers with caller-held state.
+	c.Targets[name] = t.Clone()
 }
 
 type ProviderConfigs struct {
@@ -284,6 +331,31 @@ type Target struct {
 	AutoStop            string             `json:"autoStop,omitempty"` // auto-stop after idle duration (e.g. "30m")
 	PreWarm             string             `json:"preWarm,omitempty"`  // time-of-day to pre-warm codespace (e.g. "08:00")
 	Coder               *CoderTargetConfig `json:"coder,omitempty"`
+}
+
+// Clone returns a deep copy of the target: the Coder sub-struct (with its
+// Parameters map and PortForwards slice) and the UploadBinaryOverSSH pointer
+// are duplicated, so mutating the copy never writes through to the original.
+func (t Target) Clone() Target {
+	if t.UploadBinaryOverSSH != nil {
+		v := *t.UploadBinaryOverSSH
+		t.UploadBinaryOverSSH = &v
+	}
+	if t.Coder != nil {
+		coder := *t.Coder
+		if coder.Parameters != nil {
+			params := make(map[string]string, len(coder.Parameters))
+			for k, v := range coder.Parameters {
+				params[k] = v
+			}
+			coder.Parameters = params
+		}
+		if coder.PortForwards != nil {
+			coder.PortForwards = append([]PortForward(nil), coder.PortForwards...)
+		}
+		t.Coder = &coder
+	}
+	return t
 }
 
 type CoderTargetConfig struct {

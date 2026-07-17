@@ -122,8 +122,8 @@ func (d *Daemon) IsDismissed(id string) bool {
 // New creates a new Daemon with the given config.
 func New(cfg *config.Config, configPath string) *Daemon {
 	mode := "off"
-	if cfg != nil && cfg.Daemon != nil {
-		mode = cfg.Daemon.InhibitSleep
+	if dm := cfg.EnsureDaemon(); dm.InhibitSleep != "" {
+		mode = dm.InhibitSleep
 	}
 	d := &Daemon{
 		Cfg:        cfg,

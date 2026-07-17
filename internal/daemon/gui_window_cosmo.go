@@ -861,10 +861,8 @@ func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
 	)
 	portTargetName := coderPortTargetName(uw.daemon.Cfg, ws, resolvedName)
 	portTarget := target
-	if uw.daemon.Cfg != nil {
-		if configured, ok := uw.daemon.Cfg.Targets[portTargetName]; ok {
-			portTarget = applyWorkspaceDefaults(configured, ws)
-		}
+	if configured, ok := uw.daemon.Cfg.Target(portTargetName); ok {
+		portTarget = applyWorkspaceDefaults(configured, ws)
 	}
 	ports := uw.buildCoderPortsSection(ws, portTarget, portTargetName)
 	sshSection := uw.buildWorkspaceSSHSection(provider.NameCoder, ws.Name, func() {
@@ -1090,65 +1088,74 @@ func (uw *unifiedWindow) addCoderPortForward(targetName string, ws provider.Work
 	if uw.daemon.Cfg == nil {
 		return fmt.Errorf("no config is loaded, so port forwards cannot be saved")
 	}
-	if uw.daemon.Cfg.Targets == nil {
-		uw.daemon.Cfg.Targets = map[string]config.Target{}
-	}
 	targetName = strings.TrimSpace(targetName)
 	if targetName == "" {
 		targetName = ws.Name
 	}
-	current, ok := uw.daemon.Cfg.Targets[targetName]
-	if !ok {
-		current = target
-	}
-	current = applyWorkspaceDefaults(current, ws)
-	if current.Coder == nil {
-		current.Coder = &config.CoderTargetConfig{}
-	}
-	current.Coder.WorkspaceName = ws.Name
-	current.Coder.PortForwards = append(current.Coder.PortForwards, pf)
-	uw.daemon.Cfg.Targets[targetName] = current
+	uw.daemon.Cfg.UpdateTarget(targetName, func(t *config.Target, exists bool) {
+		if !exists {
+			*t = target
+		}
+		*t = applyWorkspaceDefaults(*t, ws)
+		if t.Coder == nil {
+			t.Coder = &config.CoderTargetConfig{}
+		}
+		t.Coder.WorkspaceName = ws.Name
+		t.Coder.PortForwards = append(t.Coder.PortForwards, pf)
+	})
 	uw.daemon.persistConfig()
 	return nil
 }
 
 func (uw *unifiedWindow) updateCoderPortForward(targetName string, index int, pf config.PortForward) error {
-	if uw.daemon.Cfg == nil || uw.daemon.Cfg.Targets == nil {
+	if uw.daemon.Cfg == nil {
 		return fmt.Errorf("no config is loaded, so port forwards cannot be saved")
 	}
-	target, ok := uw.daemon.Cfg.Targets[targetName]
-	if !ok || target.Coder == nil {
-		return fmt.Errorf("coder target %q was not found in config", targetName)
+	var opErr error
+	uw.daemon.Cfg.UpdateTarget(targetName, func(t *config.Target, exists bool) {
+		if !exists || t.Coder == nil {
+			opErr = fmt.Errorf("coder target %q was not found in config", targetName)
+			return
+		}
+		if index < 0 || index >= len(t.Coder.PortForwards) {
+			opErr = fmt.Errorf("port forward no longer exists")
+			return
+		}
+		t.Coder.PortForwards[index] = pf
+	})
+	if opErr != nil {
+		return opErr
 	}
-	if index < 0 || index >= len(target.Coder.PortForwards) {
-		return fmt.Errorf("port forward no longer exists")
-	}
-	target.Coder.PortForwards[index] = pf
-	uw.daemon.Cfg.Targets[targetName] = target
 	uw.daemon.persistConfig()
 	return nil
 }
 
 func (uw *unifiedWindow) removeCoderPortForward(targetName string, index int) error {
-	if uw.daemon.Cfg == nil || uw.daemon.Cfg.Targets == nil {
+	if uw.daemon.Cfg == nil {
 		return fmt.Errorf("no config is loaded, so port forwards cannot be saved")
 	}
-	target, ok := uw.daemon.Cfg.Targets[targetName]
-	if !ok || target.Coder == nil {
-		return fmt.Errorf("coder target %q was not found in config", targetName)
+	var opErr error
+	uw.daemon.Cfg.UpdateTarget(targetName, func(t *config.Target, exists bool) {
+		if !exists || t.Coder == nil {
+			opErr = fmt.Errorf("coder target %q was not found in config", targetName)
+			return
+		}
+		if index < 0 || index >= len(t.Coder.PortForwards) {
+			opErr = fmt.Errorf("port forward no longer exists")
+			return
+		}
+		t.Coder.PortForwards = append(t.Coder.PortForwards[:index], t.Coder.PortForwards[index+1:]...)
+	})
+	if opErr != nil {
+		return opErr
 	}
-	if index < 0 || index >= len(target.Coder.PortForwards) {
-		return fmt.Errorf("port forward no longer exists")
-	}
-	target.Coder.PortForwards = append(target.Coder.PortForwards[:index], target.Coder.PortForwards[index+1:]...)
-	uw.daemon.Cfg.Targets[targetName] = target
 	uw.daemon.persistConfig()
 	return nil
 }
 
 func coderPortTargetName(cfg *config.Config, ws provider.Workspace, fallback string) string {
 	if cfg != nil {
-		for name, target := range cfg.Targets {
+		for name, target := range cfg.TargetsSnapshot() {
 			if target.Coder != nil && target.Coder.WorkspaceName == ws.Name {
 				return name
 			}
@@ -1174,7 +1181,7 @@ func (uw *unifiedWindow) showCosmoCreateNewCoder() {
 
 	targetSel := widget.NewSelect(targetNames, func(string) {})
 	targetSel.SetSelected(targetNames[0])
-	baseTarget := uw.daemon.Cfg.Targets[targetNames[0]]
+	baseTarget, _ := uw.daemon.Cfg.Target(targetNames[0])
 
 	nameEntry := widget.NewEntry()
 	nameEntry.PlaceHolder = "e.g. my-repo-review"
@@ -1187,7 +1194,7 @@ func (uw *unifiedWindow) showCosmoCreateNewCoder() {
 	pathEntry.SetText(guessWorkspacePath(baseTarget, nil))
 
 	targetSel.OnChanged = func(name string) {
-		t := uw.daemon.Cfg.Targets[name]
+		t, _ := uw.daemon.Cfg.Target(name)
 		if t.Coder != nil && t.Coder.WorkspaceName != "" {
 			nameEntry.SetText(t.Coder.WorkspaceName)
 		}
@@ -1205,7 +1212,9 @@ func (uw *unifiedWindow) showCosmoCreateNewCoder() {
 
 	createBtn := primaryButton("Create and open", func() {
 		targetName := targetSel.Selected
-		target := uw.daemon.Cfg.Targets[targetName]
+		// Target() returns a deep copy, so the WorkspacePath/WorkspaceName
+		// staging below never mutates (or persists into) the live config.
+		target, _ := uw.daemon.Cfg.Target(targetName)
 		if target.Coder == nil {
 			hint.SetText("Selected target is missing coder settings.")
 			return

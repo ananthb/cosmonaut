@@ -283,7 +283,7 @@ func (m detailModel) openInEditor(d *AppletData) tea.Cmd {
 				return flashMsg{text: err.Error(), err: true}
 			}
 		}
-		edName := d.Config().Editor
+		edName := d.Config().GetEditor()
 		ed, err := editor.ForName(edName)
 		if err != nil {
 			return flashMsg{text: err.Error(), err: true}

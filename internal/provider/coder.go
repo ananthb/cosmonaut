@@ -362,10 +362,7 @@ func (m *CoderManager) targetOrganization(target config.Target) string {
 	if target.Coder != nil && target.Coder.Organization != "" {
 		return target.Coder.Organization
 	}
-	if m.Config != nil {
-		return m.Config.Providers.Coder.Organization
-	}
-	return ""
+	return m.Config.CoderOrganization()
 }
 
 func sortedKeys(maybe map[string]string) []string {

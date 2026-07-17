@@ -372,7 +372,7 @@ func configRepos(cfg *config.Config) []string {
 	}
 	seen := make(map[string]bool)
 	var repos []string
-	for _, t := range cfg.Targets {
+	for _, t := range cfg.TargetsSnapshot() {
 		if t.Repository != "" && !seen[t.Repository] {
 			seen[t.Repository] = true
 			repos = append(repos, t.Repository)
@@ -383,7 +383,7 @@ func configRepos(cfg *config.Config) []string {
 
 func guiTargetForRepo(cfg *config.Config, repo string) (config.Target, string) {
 	if cfg != nil {
-		for name, t := range cfg.Targets {
+		for name, t := range cfg.TargetsSnapshot() {
 			if t.Repository == repo {
 				return t, name
 			}
@@ -399,12 +399,16 @@ func guiTargetForRepo(cfg *config.Config, repo string) (config.Target, string) {
 
 func guiTargetForCoderWorkspace(cfg *config.Config, ws provider.Workspace) (config.Target, string) {
 	if cfg != nil {
-		for name, t := range cfg.Targets {
+		// TargetsSnapshot deep-copies, so the WorkspaceName default applied
+		// below stays local instead of writing through the shared Coder
+		// pointer into the live config.
+		snap := cfg.TargetsSnapshot()
+		for name, t := range snap {
 			if t.Coder != nil && t.Coder.WorkspaceName == ws.Name {
 				return applyWorkspaceDefaults(t, ws), name
 			}
 		}
-		for name, t := range cfg.Targets {
+		for name, t := range snap {
 			if t.Coder != nil {
 				t = applyWorkspaceDefaults(t, ws)
 				if t.Coder.WorkspaceName == "" {
@@ -497,7 +501,7 @@ func configuredCoderTargets(cfg *config.Config) []string {
 		return nil
 	}
 	var names []string
-	for name, target := range cfg.Targets {
+	for name, target := range cfg.TargetsSnapshot() {
 		if target.Coder != nil && target.Coder.Template != "" {
 			names = append(names, name)
 		}

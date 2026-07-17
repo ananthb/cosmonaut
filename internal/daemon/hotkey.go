@@ -19,8 +19,8 @@ func DefaultHotkey() string {
 
 func (d *Daemon) startHotkeyListener() {
 	hotkeyStr := DefaultHotkey()
-	if d.Cfg != nil && d.Cfg.Daemon != nil && d.Cfg.Daemon.Hotkey != "" {
-		hotkeyStr = d.Cfg.Daemon.Hotkey
+	if dm := d.Cfg.EnsureDaemon(); dm.Hotkey != "" {
+		hotkeyStr = dm.Hotkey
 	}
 
 	mods, key, err := parseHotkeyString(hotkeyStr)
@@ -55,7 +55,7 @@ func (d *Daemon) startHotkeyListener() {
 // hotkeyAction launches the default target, falling back to the picker
 // when no default target is configured.
 func (d *Daemon) hotkeyAction() {
-	if d.Cfg == nil || d.Cfg.DefaultTarget == "" {
+	if d.Cfg.GetDefaultTarget() == "" {
 		d.showGUI()
 		return
 	}

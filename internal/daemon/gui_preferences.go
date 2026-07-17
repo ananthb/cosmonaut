@@ -49,8 +49,8 @@ func (d *Daemon) buildSettingsPanel(win fyne.Window) fyne.CanvasObject {
 	}
 
 	// Default target settings.
-	if d.Cfg != nil && d.Cfg.DefaultTarget != "" {
-		if _, ok := d.Cfg.Target(d.Cfg.DefaultTarget); ok {
+	if defaultTarget := d.Cfg.GetDefaultTarget(); defaultTarget != "" {
+		if _, ok := d.Cfg.Target(defaultTarget); ok {
 			items = append(items, d.buildTargetSection())
 			items = append(items, widget.NewSeparator())
 		}
@@ -333,7 +333,7 @@ func (d *Daemon) buildDaemonSection() fyne.CanvasObject {
 }
 
 func (d *Daemon) buildTargetSection() fyne.CanvasObject {
-	targetName := d.Cfg.DefaultTarget
+	targetName := d.Cfg.GetDefaultTarget()
 	t, _ := d.Cfg.Target(targetName)
 
 	heading := widget.NewLabel(fmt.Sprintf("Target: %s", targetName))
@@ -344,7 +344,7 @@ func (d *Daemon) buildTargetSection() fyne.CanvasObject {
 		currentAutoStop = "off"
 	}
 	autoStopSelect := widget.NewSelect([]string{"off", "15m", "30m", "1h"}, func(val string) {
-		d.Cfg.UpdateTarget(targetName, func(t *config.Target) {
+		d.Cfg.UpdateTarget(targetName, func(t *config.Target, _ bool) {
 			if val == "off" {
 				t.AutoStop = ""
 			} else {
@@ -360,7 +360,7 @@ func (d *Daemon) buildTargetSection() fyne.CanvasObject {
 		currentPreWarm = "off"
 	}
 	preWarmSelect := widget.NewSelect([]string{"off", "08:00", "09:00", "10:00"}, func(val string) {
-		d.Cfg.UpdateTarget(targetName, func(t *config.Target) {
+		d.Cfg.UpdateTarget(targetName, func(t *config.Target, _ bool) {
 			if val == "off" {
 				t.PreWarm = ""
 			} else {

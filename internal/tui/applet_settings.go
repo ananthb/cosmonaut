@@ -63,20 +63,17 @@ func newSettingsModel(d *AppletData) settingsModel {
 }
 
 func (m *settingsModel) syncFromConfig(cfg *config.Config) {
-	m.editorInput.SetValue(cfg.Editor)
+	m.editorInput.SetValue(cfg.GetEditor())
 
 	sleepActions := []string{"off", "sleep", "sleep+shutdown"}
-	dm := cfg.Daemon
-	if dm == nil {
-		dm = &config.DaemonConfig{}
-	}
+	dm := cfg.EnsureDaemon()
 	m.hotkeyInput.SetValue(dm.Hotkey)
 	m.daemonSleep = indexOf(sleepActions, defaultStr(dm.InhibitSleep, "off"))
 
 	stops := []string{"off", "15m", "30m", "1h"}
 	warms := []string{"off", "08:00", "09:00", "10:00"}
-	if cfg.DefaultTarget != "" {
-		t := cfg.Targets[cfg.DefaultTarget]
+	if defaultTarget := cfg.GetDefaultTarget(); defaultTarget != "" {
+		t, _ := cfg.Target(defaultTarget)
 		m.targetStop = indexOf(stops, defaultStr(t.AutoStop, "off"))
 		m.targetWarm = indexOf(warms, defaultStr(t.PreWarm, "off"))
 	}
@@ -119,17 +116,17 @@ func (m settingsModel) handleKey(msg tea.KeyMsg, d *AppletData) (settingsModel, 
 	if m.section == secEditor {
 		switch key {
 		case "esc":
-			d.Config().Editor = strings.TrimSpace(m.editorInput.Value())
+			d.Config().SetEditor(strings.TrimSpace(m.editorInput.Value()))
 			cmd := m.persistAndAck(d)
 			return m, tea.Batch(cmd, switchTo(viewList, nil))
 		case "tab":
-			d.Config().Editor = strings.TrimSpace(m.editorInput.Value())
+			d.Config().SetEditor(strings.TrimSpace(m.editorInput.Value()))
 			cmd := m.persistAndAck(d)
 			m.section = (m.section + 1) % numSections
 			m.editorInput.Blur()
 			return m, cmd
 		case "shift+tab":
-			d.Config().Editor = strings.TrimSpace(m.editorInput.Value())
+			d.Config().SetEditor(strings.TrimSpace(m.editorInput.Value()))
 			cmd := m.persistAndAck(d)
 			m.section = (m.section + numSections - 1) % numSections
 			m.editorInput.Blur()
@@ -221,36 +218,38 @@ func (m settingsModel) cycleValue(delta int, d *AppletData) settingsModel {
 	case secEditor:
 		// Editor is a free-text field — left/right has no enum to cycle.
 	case secDaemon:
-		if d.Config().Daemon == nil {
-			d.Config().Daemon = &config.DaemonConfig{}
-		}
 		modes := []string{"off", "sleep", "sleep+shutdown"}
 		m.daemonSleep = wrapDetail(m.daemonSleep+delta, len(modes))
-		d.Config().Daemon.InhibitSleep = modes[m.daemonSleep]
+		d.Config().SetDaemonInhibitSleep(modes[m.daemonSleep])
 	case secTarget:
-		if d.Config().DefaultTarget == "" {
+		targetName := d.Config().GetDefaultTarget()
+		if targetName == "" {
 			return m
 		}
-		t := d.Config().Targets[d.Config().DefaultTarget]
 		switch m.targetField {
 		case 0:
 			stops := []string{"off", "15m", "30m", "1h"}
 			m.targetStop = wrapDetail(m.targetStop+delta, len(stops))
-			if stops[m.targetStop] == "off" {
-				t.AutoStop = ""
-			} else {
-				t.AutoStop = stops[m.targetStop]
-			}
+			val := stops[m.targetStop]
+			d.Config().UpdateTarget(targetName, func(t *config.Target, _ bool) {
+				if val == "off" {
+					t.AutoStop = ""
+				} else {
+					t.AutoStop = val
+				}
+			})
 		case 1:
 			warms := []string{"off", "08:00", "09:00", "10:00"}
 			m.targetWarm = wrapDetail(m.targetWarm+delta, len(warms))
-			if warms[m.targetWarm] == "off" {
-				t.PreWarm = ""
-			} else {
-				t.PreWarm = warms[m.targetWarm]
-			}
+			val := warms[m.targetWarm]
+			d.Config().UpdateTarget(targetName, func(t *config.Target, _ bool) {
+				if val == "off" {
+					t.PreWarm = ""
+				} else {
+					t.PreWarm = val
+				}
+			})
 		}
-		d.Config().Targets[d.Config().DefaultTarget] = t
 	}
 	return m
 }
@@ -431,8 +430,8 @@ func (m settingsModel) renderDaemon(d *AppletData) string {
 
 func (m settingsModel) renderTarget(d *AppletData) string {
 	header := m.sectionHeader("DEFAULT TARGET", secTarget)
-	cfg := d.Config()
-	if cfg.DefaultTarget == "" {
+	defaultTarget := d.Config().GetDefaultTarget()
+	if defaultTarget == "" {
 		return header + "\n  " + dimStyle.Render("(no defaultTarget set in config)")
 	}
 	stops := []string{"off", "15m", "30m", "1h"}
@@ -442,7 +441,7 @@ func (m settingsModel) renderTarget(d *AppletData) string {
 		{"Pre-warm", warms[m.targetWarm]},
 	}
 	var lines []string
-	lines = append(lines, header+dimStyle.Render(" — "+cfg.DefaultTarget))
+	lines = append(lines, header+dimStyle.Render(" — "+defaultTarget))
 	for i, r := range rows {
 		cursor := "  "
 		if m.section == secTarget && i == m.targetField {
