@@ -214,10 +214,10 @@ func (m createModel) update(msg tea.Msg, d *AppletData) (createModel, tea.Cmd) {
 func (m createModel) handleKey(msg tea.KeyMsg, d *AppletData) (createModel, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		// Cancel is a deliberate abandonment of the form, so drop the
-		// in-progress state — the tab disappears from the header and the
-		// next "n" / seeded entry starts clean.
-		m = m.clear()
+		// Park the form: keep typed input and the active flag so the
+		// Create tab stays in the header and tabbing back from the list
+		// restores it. Deliberate abandonment is the Cancel button, which
+		// clears the form.
 		return m, switchTo(viewList, nil)
 	case "tab":
 		m = m.cycleFocus(1)

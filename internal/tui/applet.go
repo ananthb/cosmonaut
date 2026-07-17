@@ -174,9 +174,19 @@ func (m AppletModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "tab":
+			// Detail/Settings/Create use tab for internal focus/section
+			// cycling — forward it (fall through to the routing at the
+			// bottom) instead of hijacking it for view switching. From the
+			// list, tab still cycles views; esc steps back to the list.
+			if m.activeViewConsumesTab() {
+				break
+			}
 			m = m.cycleView()
 			return m, m.activeInit()
 		case "shift+tab":
+			if m.activeViewConsumesTab() {
+				break
+			}
 			m = m.cycleViewBack()
 			return m, m.activeInit()
 		case "ctrl+r":
@@ -310,6 +320,9 @@ func (m AppletModel) renderHeader() string {
 	bar := strings.Join(tabs, dimStyle.Render(" · "))
 	title := titleStyle.Render("cosmonaut")
 	right := dimStyle.Render("tab: switch  ctrl+r: refresh  q: quit")
+	if m.activeViewConsumesTab() {
+		right = dimStyle.Render("tab: focus  esc: back  ctrl+r: refresh")
+	}
 	gap := strings.Repeat(" ", max(1, m.width-lipgloss.Width(title)-lipgloss.Width(bar)-lipgloss.Width(right)-2))
 	return title + "  " + bar + gap + right + "\n" + dimStyle.Render(strings.Repeat("─", max(0, m.width)))
 }
@@ -366,6 +379,17 @@ func (m AppletModel) visibleViews() []appletView {
 	}
 	out = append(out, viewSettings)
 	return out
+}
+
+// activeViewConsumesTab reports whether the focused sub-view uses tab for
+// its own focus/section cycling. When true, tab/shift+tab are routed to the
+// sub-view; view switching happens from the list (tab) or via esc-then-tab.
+func (m AppletModel) activeViewConsumesTab() bool {
+	switch m.view {
+	case viewDetail, viewSettings, viewCreate:
+		return true
+	}
+	return false
 }
 
 func (m AppletModel) activeInit() tea.Cmd {

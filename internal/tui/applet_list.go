@@ -103,14 +103,45 @@ func (m listModel) handleKey(msg tea.KeyMsg, d *AppletData) (listModel, tea.Cmd)
 		m.escSeq++
 		seq := m.escSeq
 		return m, tea.Tick(escTimeout, func(time.Time) tea.Msg { return escTimeoutMsg{seq: seq} })
-	case "up", "k":
+	case "up":
 		m.cursorUp()
-	case "down", "j":
+	case "down":
 		m.cursorDown()
-	case "home", "g":
+	case "home":
 		m.cursor = m.firstSelectableIndex()
-	case "end", "G":
+	case "end":
 		m.cursor = m.lastSelectableIndex()
+	// The vim-style aliases only navigate while no filter is being typed —
+	// otherwise "jekyll" would move the cursor instead of filtering (same
+	// guard as the s/n/r/d command keys below).
+	case "k":
+		if m.filter == "" {
+			m.cursorUp()
+		} else {
+			m.filter += key
+			m.applyFilter()
+		}
+	case "j":
+		if m.filter == "" {
+			m.cursorDown()
+		} else {
+			m.filter += key
+			m.applyFilter()
+		}
+	case "g":
+		if m.filter == "" {
+			m.cursor = m.firstSelectableIndex()
+		} else {
+			m.filter += key
+			m.applyFilter()
+		}
+	case "G":
+		if m.filter == "" {
+			m.cursor = m.lastSelectableIndex()
+		} else {
+			m.filter += key
+			m.applyFilter()
+		}
 	case "enter":
 		if ws := m.workspaceAtCursor(); ws != nil {
 			return m, switchTo(viewDetail, ws)

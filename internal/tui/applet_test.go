@@ -61,9 +61,10 @@ func TestListModelRebuildEmpty(t *testing.T) {
 }
 
 // TestAppletViewCreatePreservesInputAcrossTabs is the regression test for
-// PR #19 review finding #8: viewCreate must be wired into the tab cycle and
-// the create model must survive a round trip away and back without losing
-// user input.
+// PR #19 review finding #8, updated for the tab-routing fix: inside Create,
+// tab moves field focus (it must NOT leave the view); esc parks the form
+// back to the list keeping its input; tab from the list re-enters the
+// still-active form with the input intact.
 func TestAppletViewCreatePreservesInputAcrossTabs(t *testing.T) {
 	d := NewAppletData(&config.Config{Targets: map[string]config.Target{}}, "")
 	m := NewAppletModel(d)
@@ -96,28 +97,86 @@ func TestAppletViewCreatePreservesInputAcrossTabs(t *testing.T) {
 		t.Errorf("renderHeader() = %q, want it to contain %q", header, "Create")
 	}
 
-	// Tab forward to viewList (Create → Settings → List in the rotation).
-	for i := 0; i < 3 && m.view != viewList; i++ {
-		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-		m = updated.(AppletModel)
+	// Tab inside Create must advance field focus, not switch views.
+	focusBefore := m.create.focus
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(AppletModel)
+	if m.view != viewCreate {
+		t.Fatalf("tab inside Create switched view to %v; it must cycle field focus instead", m.view)
 	}
-	if m.view != viewList {
-		t.Fatalf("after cycling tabs: view = %v, want viewList", m.view)
+	if m.create.focus == focusBefore {
+		t.Error("tab inside Create did not advance field focus")
 	}
 
-	// Tab back to viewCreate (List → Create in reverse, since detail is
-	// hidden and create is active).
-	for i := 0; i < 4 && m.view != viewCreate; i++ {
-		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-		m = updated.(AppletModel)
+	// esc parks the form back to the list without clearing it. The esc
+	// handler returns a switchTo command; run it and dispatch its message
+	// the way the bubbletea runtime would.
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(AppletModel)
+	if cmd == nil {
+		t.Fatal("esc in Create returned no command")
 	}
+	updated, _ = m.Update(cmd())
+	m = updated.(AppletModel)
+	if m.view != viewList {
+		t.Fatalf("after esc: view = %v, want viewList", m.view)
+	}
+	if !m.create.active {
+		t.Fatal("esc must park the create form, not clear it")
+	}
+
+	// Tab forward from the list re-enters the active create form
+	// (rotation list → create → settings, detail hidden).
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(AppletModel)
 	if m.view != viewCreate {
-		t.Fatalf("after shift+tabbing back: view = %v, want viewCreate", m.view)
+		t.Fatalf("after tab from list: view = %v, want viewCreate", m.view)
 	}
 
 	// The typed input must still be there — this is the bug under fix.
 	if got := m.create.repoInput.Value(); got != "foo/bar" {
 		t.Errorf("repoInput.Value() after round trip = %q, want %q", got, "foo/bar")
+	}
+}
+
+// TestAppletTabCyclesSettingsSections locks in the tab-routing fix for
+// Settings: before it, the top-level model consumed tab so m.section could
+// never change and most of the settings surface was unreachable.
+func TestAppletTabCyclesSettingsSections(t *testing.T) {
+	d := NewAppletData(&config.Config{Targets: map[string]config.Target{}}, "")
+	m := NewAppletModel(d)
+	m.width, m.height = 120, 40
+
+	updated, _ := m.Update(switchViewMsg{view: viewSettings})
+	m = updated.(AppletModel)
+	if m.view != viewSettings {
+		t.Fatalf("view = %v, want viewSettings", m.view)
+	}
+
+	sectionBefore := m.settings.section
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(AppletModel)
+	if m.view != viewSettings {
+		t.Fatalf("tab inside Settings switched view to %v; it must cycle sections instead", m.view)
+	}
+	if m.settings.section == sectionBefore {
+		t.Error("tab inside Settings did not advance the section")
+	}
+}
+
+// TestListFilterAcceptsVimKeys locks in the filter fix: once a filter is
+// being typed, j/k/g/G are text, not navigation — "ajkg" must not become
+// "a" with three cursor jumps. (Like the s/n/r/d command keys, vim-style
+// navigation still applies while the filter is empty, so the first typed
+// character must be a non-command one.)
+func TestListFilterAcceptsVimKeys(t *testing.T) {
+	d := NewAppletData(&config.Config{Targets: map[string]config.Target{}}, "")
+	m := newListModel(d)
+	for _, r := range "ajkgG" {
+		m, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}, d)
+	}
+	if m.filter != "ajkgG" {
+		t.Errorf("filter = %q, want %q", m.filter, "ajkgG")
 	}
 }
 
