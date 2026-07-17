@@ -495,3 +495,65 @@ func TestProviderAndNameFromFilename(t *testing.T) {
 		})
 	}
 }
+
+func TestHasGlobalIncludeLine(t *testing.T) {
+	cases := []struct {
+		name   string
+		config string
+		want   bool
+	}{
+		{"real include", "Include ~/.ssh/cosmonaut/*.conf\nHost x\n", true},
+		{"indented include", "  Include ~/.ssh/cosmonaut/*.conf\n", true},
+		{"lowercase keyword", "include ~/.ssh/cosmonaut/*.conf\n", true},
+		// The regression: a commented-out include satisfied the old
+		// substring check, permanently disabling setup.
+		{"commented include", "# Include ~/.ssh/cosmonaut/*.conf\nHost x\n", false},
+		{"include inside Host block is scoped, not global", "Host example\n  Include ~/.ssh/cosmonaut/*.conf\n", false},
+		{"absent", "Host x\n  User me\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasGlobalIncludeLine(tc.config); got != tc.want {
+				t.Errorf("hasGlobalIncludeLine(%q) = %v, want %v", tc.config, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEnsureConfigIncludesGeneratedReAddsAfterCommentedOut(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	orig := "# Include ~/.ssh/cosmonaut/*.conf\nHost work\n  User me\n"
+	if err := os.WriteFile(path, []byte(orig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureConfigIncludesGenerated(path); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if !hasGlobalIncludeLine(string(data)) {
+		t.Errorf("include line was not re-added:\n%s", data)
+	}
+	if !strings.Contains(string(data), "Host work") {
+		t.Errorf("user content lost:\n%s", data)
+	}
+}
+
+func TestStripManagedBlockLegacyOnlyWhenTailIsOurs(t *testing.T) {
+	// A conf whose ServerAliveInterval line is followed by more user
+	// content (another Host stanza) must NOT be truncated.
+	content := "Host a.coder\n  ServerAliveInterval 15\n  ServerAliveCountMax 3\n\nHost b.coder\n  User me\n"
+	if got := stripManagedBlock(content); got != content {
+		t.Errorf("legacy strip truncated user content:\n%q\n->\n%q", content, got)
+	}
+
+	// A true legacy tail (only our lines to EOF) is still stripped.
+	legacy := "Host cs-x\n  User me\n  ServerAliveInterval 15\n  ServerAliveCountMax 3\n  ConnectionAttempts 3\n"
+	got := stripManagedBlock(legacy)
+	if strings.Contains(got, "ServerAliveInterval") {
+		t.Errorf("true legacy tail not stripped:\n%q", got)
+	}
+	if !strings.Contains(got, "Host cs-x") {
+		t.Errorf("host stanza lost:\n%q", got)
+	}
+}

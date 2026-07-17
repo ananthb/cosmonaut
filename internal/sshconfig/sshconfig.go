@@ -4,6 +4,7 @@
 package sshconfig
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -124,6 +125,30 @@ func ProviderAndNameFromFilename(filename string) (provider, name string) {
 	return "github", base
 }
 
+// includeLineRe matches an actual, uncommented include line. A raw
+// substring check was used before, which a commented-out
+// `# Include ~/.ssh/cosmonaut/*.conf` satisfied — permanently disabling
+// setup with no diagnostic once a user commented the line to debug.
+var includeLineRe = regexp.MustCompile(`(?m)^[ \t]*[Ii]nclude[ \t]+~/\.ssh/cosmonaut/\*\.conf[ \t]*$`)
+
+// topLevelStanzaRe finds the first Host/Match directive; an include that
+// appears after it is scoped to that block by OpenSSH and does not apply
+// globally.
+var topLevelStanzaRe = regexp.MustCompile(`(?mi)^[ \t]*(Host|Match)[ \t]`)
+
+// hasGlobalIncludeLine reports whether config contains our include line
+// in the global section (before any Host/Match stanza).
+func hasGlobalIncludeLine(config string) bool {
+	loc := includeLineRe.FindStringIndex(config)
+	if loc == nil {
+		return false
+	}
+	if stanza := topLevelStanzaRe.FindStringIndex(config); stanza != nil && stanza[0] < loc[0] {
+		return false
+	}
+	return true
+}
+
 // EnsureConfigIncludesGenerated ensures the main SSH config includes the generated configs.
 func EnsureConfigIncludesGenerated(mainConfigPath string) error {
 	current, err := os.ReadFile(mainConfigPath)
@@ -132,7 +157,7 @@ func EnsureConfigIncludesGenerated(mainConfigPath string) error {
 	}
 
 	currentStr := string(current)
-	if strings.Contains(currentStr, SSHIncludeLine) {
+	if hasGlobalIncludeLine(currentStr) {
 		return nil
 	}
 
@@ -371,10 +396,35 @@ func stripManagedBlock(content string) string {
 			return content[:i]
 		}
 	}
-	if i := indexAtLineStart(content, "  ServerAliveInterval 15"); i >= 0 {
+	if i := indexAtLineStart(content, "  ServerAliveInterval 15"); i >= 0 && isLegacyExtrasTail(content[i:]) {
 		return content[:i]
 	}
 	return content
+}
+
+// isLegacyExtrasTail reports whether tail consists solely of the lines a
+// pre-sentinel cosmonaut wrote. The legacy strip may only fire when
+// everything from the match to EOF is ours: a coder-config-ssh-generated
+// or hand-edited conf that happens to contain `  ServerAliveInterval 15`
+// mid-file used to lose every later Host stanza on each applet start.
+func isLegacyExtrasTail(tail string) bool {
+	allowed := map[string]bool{
+		"ServerAliveInterval 15": true,
+		"ServerAliveCountMax 3":  true,
+		"ConnectionAttempts 3":   true,
+		"IdentityAgent none":     true,
+		"PKCS11Provider none":    true,
+	}
+	for _, line := range strings.Split(tail, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !allowed[line] {
+			return false
+		}
+	}
+	return true
 }
 
 // indexAtLineStart finds substr in content, but only at the start of a
@@ -465,6 +515,7 @@ func RefreshAllManagedExtras(includeDir string, optsFor func(filename string) Ma
 		return 0, err
 	}
 	n := 0
+	var errs []error
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".conf") {
 			continue
@@ -476,11 +527,14 @@ func RefreshAllManagedExtras(includeDir string, optsFor func(filename string) Ma
 		}
 		changed, err := RefreshManagedExtras(full, opts)
 		if err != nil {
-			return n, fmt.Errorf("%s: %w", full, err)
+			// Keep sweeping: one stray hand-made .conf must not block the
+			// refresh of every file after it on each applet start.
+			errs = append(errs, fmt.Errorf("%s: %w", full, err))
+			continue
 		}
 		if changed {
 			n++
 		}
 	}
-	return n, nil
+	return n, errors.Join(errs...)
 }
