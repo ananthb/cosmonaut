@@ -69,41 +69,56 @@ func (m *PortForwardManager) StartProtocol(providerName, workspaceName, protocol
 		return err
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	command, args := buildPortForwardCommand(key)
+	cmd := exec.CommandContext(ctx, command, args...)
+	output := &boundedBuffer{limit: 16 * 1024}
+	managed := &managedPortForward{key: key, cancel: cancel, output: output}
+
+	// Reserve the key in the map inside ONE critical section, before any
+	// slow work. The old check-then-start-then-insert let two concurrent
+	// Starts for the same key both pass the checks and both spawn a
+	// process — the second's insert overwrote the first's entry, making
+	// its cancel unreachable so StopAll could never kill that process.
 	m.mu.Lock()
 	if _, ok := m.forwards[key]; ok {
 		m.mu.Unlock()
+		cancel()
 		return nil
 	}
 	if other, ok := m.localPortOwnerLocked(localPort); ok {
 		m.mu.Unlock()
+		cancel()
 		return fmt.Errorf("localhost port %d is already forwarded to %s:%d", localPort, other.Workspace, other.RemotePort)
 	}
+	m.forwards[key] = managed
+	delete(m.lastErr, key)
 	m.mu.Unlock()
 
-	if err := ensureLocalPortAvailable(key.Protocol, localPort); err != nil {
-		return err
+	unreserve := func() {
+		m.mu.Lock()
+		if current := m.forwards[key]; current == managed {
+			delete(m.forwards, key)
+		}
+		m.mu.Unlock()
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	command, args := buildPortForwardCommand(key)
-	cmd := exec.CommandContext(ctx, command, args...)
+	if err := ensureLocalPortAvailable(key.Protocol, localPort); err != nil {
+		unreserve()
+		cancel()
+		return err
+	}
 	// On Linux, Pdeathsig ensures a crashed/SIGKILLed daemon can't leave
 	// gh/coder forward processes holding local ports.
 	cmd.SysProcAttr = daemonChildSysProcAttr()
-	output := &boundedBuffer{limit: 16 * 1024}
 	cmd.Stdout = output
 	cmd.Stderr = output
 
 	if err := cmd.Start(); err != nil {
+		unreserve()
 		cancel()
 		return fmt.Errorf("starting port forward: %w", err)
 	}
-
-	managed := &managedPortForward{key: key, cancel: cancel, output: output}
-	m.mu.Lock()
-	m.forwards[key] = managed
-	delete(m.lastErr, key)
-	m.mu.Unlock()
 
 	done := make(chan error, 1)
 	go func() {

@@ -1,6 +1,7 @@
 package codespace
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -16,11 +17,17 @@ type Port struct {
 
 // ListPorts returns the forwarded ports for a codespace.
 func ListPorts(runner GHRunner, codespaceName string) ([]Port, error) {
+	return ListPortsCtx(context.Background(), runner, codespaceName)
+}
+
+// ListPortsCtx is the context-aware variant of ListPorts, so callers can
+// cap how long a hung `gh codespace ports` blocks them.
+func ListPortsCtx(ctx context.Context, runner GHRunner, codespaceName string) ([]Port, error) {
 	if codespaceName == "" {
 		return nil, fmt.Errorf("codespace name is required")
 	}
 
-	out, err := runner.Run([]string{
+	out, err := runner.RunCtx(ctx, []string{
 		"codespace", "ports",
 		"--json", "browseUrl,label,sourcePort,visibility",
 		"-c", codespaceName,

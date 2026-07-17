@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/url"
@@ -47,6 +48,12 @@ func (d *Daemon) ensurePortsWithCallback(codespaceName string, done func()) port
 	return entry
 }
 
+// portsListTimeout caps a single `gh codespace ports` call. Without it a
+// hung gh leaked the goroutine and wedged the cache entry in Loading
+// forever — and because ensurePorts only starts a fetch when the key is
+// absent, the tray showed "Loading ports..." permanently.
+const portsListTimeout = 30 * time.Second
+
 func (d *Daemon) refreshPortsAsync(codespaceName string, done func()) {
 	if codespaceName == "" {
 		return
@@ -54,7 +61,11 @@ func (d *Daemon) refreshPortsAsync(codespaceName string, done func()) {
 
 	d.setPortCacheLoading(codespaceName)
 	go func() {
-		ports, err := codespace.ListPorts(d.Runner, codespaceName)
+		ctx, cancel := context.WithTimeout(context.Background(), portsListTimeout)
+		defer cancel()
+		ports, err := codespace.ListPortsCtx(ctx, d.Runner, codespaceName)
+		// Always store a result — success or error — so Loading can never
+		// stick.
 		d.setPortCacheResult(codespaceName, ports, err)
 		if err != nil {
 			log.Printf("ports: list %s: %v", codespaceName, err)

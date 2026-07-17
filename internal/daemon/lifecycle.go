@@ -5,6 +5,7 @@ import (
 	"log"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/linuskendall/cosmonaut/internal/codespace"
@@ -72,19 +73,51 @@ func (d *Daemon) preWarmLoop(name string, target config.Target, tod timeOfDay) {
 
 		select {
 		case <-timer.C:
-			log.Printf("pre-warm: starting codespace for target %s", name)
-			cs, err := codespace.CreateCodespace(d.Runner, target)
-			if err != nil {
-				log.Printf("pre-warm: create failed for %s: %v", name, err)
-			} else {
-				log.Printf("pre-warm: created %s for %s", cs.Name, name)
-				sendNotification(fmt.Sprintf("Codespace ready: %s", name))
-			}
+			d.preWarmOnce(name, target)
 		case <-d.stopCh:
 			timer.Stop()
 			return
 		}
 	}
+}
+
+// preWarmOnce makes the target's codespace warm: reuse a matching one
+// (starting it if stopped) and only create when none exists. The old
+// behavior called CreateCodespace unconditionally, so a daily pre-warm
+// accumulated a brand-new billable codespace every single day.
+func (d *Daemon) preWarmOnce(name string, target config.Target) {
+	log.Printf("pre-warm: warming codespace for target %s", name)
+
+	existing, err := codespace.ListAllCodespaces(d.Runner)
+	if err != nil {
+		log.Printf("pre-warm: list failed for %s: %v (skipping this run)", name, err)
+		return
+	}
+	matches := codespace.FindMatching(existing, &target)
+	if len(matches) > 0 {
+		cs := matches[0]
+		if strings.EqualFold(cs.State, "Available") {
+			log.Printf("pre-warm: %s already running for %s", cs.Name, name)
+			return
+		}
+		// Starting a stopped codespace: EnsureReachable boots it via
+		// `gh codespace ssh` probing, same as the launch flow.
+		if err := codespace.EnsureReachable(d.Runner, cs.Name); err != nil {
+			log.Printf("pre-warm: start failed for %s (%s): %v", name, cs.Name, err)
+			return
+		}
+		log.Printf("pre-warm: started %s for %s", cs.Name, name)
+		sendNotification(fmt.Sprintf("Codespace ready: %s", name))
+		return
+	}
+
+	cs, err := codespace.CreateCodespace(d.Runner, target)
+	if err != nil {
+		log.Printf("pre-warm: create failed for %s: %v", name, err)
+		return
+	}
+	log.Printf("pre-warm: created %s for %s", cs.Name, name)
+	sendNotification(fmt.Sprintf("Codespace ready: %s", name))
 }
 
 type timeOfDay struct {
@@ -102,8 +135,11 @@ func parseTimeOfDay(s string) (timeOfDay, error) {
 func nextOccurrence(tod timeOfDay) time.Time {
 	now := time.Now()
 	next := time.Date(now.Year(), now.Month(), now.Day(), tod.hour, tod.minute, 0, 0, now.Location())
-	if next.Before(now) {
-		next = next.Add(24 * time.Hour)
+	if !next.After(now) {
+		// AddDate, not Add(24h): across a DST transition the same wall
+		//-clock time is not 24 hours away, and `next == now` must not
+		// arm a zero-duration timer.
+		next = next.AddDate(0, 0, 1)
 	}
 	return next
 }

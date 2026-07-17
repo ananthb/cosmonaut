@@ -170,7 +170,7 @@ func (d *Daemon) releasePoll() {
 // slot via tryAcquirePoll or acquirePoll.
 func (d *Daemon) runPoll() {
 	var codespaces []codespace.Codespace
-	ghWorkspaces := d.pollProvider(provider.NameGitHub, "gh", func(ctx context.Context) ([]provider.Workspace, error) {
+	ghWorkspaces, ghOK := d.pollProvider(provider.NameGitHub, "gh", func(ctx context.Context) ([]provider.Workspace, error) {
 		cs, err := codespace.ListAllCodespacesCtx(ctx, d.Runner)
 		if err != nil {
 			return nil, err
@@ -179,16 +179,30 @@ func (d *Daemon) runPoll() {
 		return codespacesToWorkspaces(cs), nil
 	})
 
-	coderWorkspaces := d.pollProvider(provider.NameCoder, "coder", func(ctx context.Context) ([]provider.Workspace, error) {
+	coderWorkspaces, coderOK := d.pollProvider(provider.NameCoder, "coder", func(ctx context.Context) ([]provider.Workspace, error) {
 		return provider.NewCoderManager(d.Cfg).ListAllWorkspacesCtx(ctx)
 	})
+
+	oldCodespaces := d.Codespaces()
+	oldWorkspaces := d.Workspaces()
+
+	// On a transient provider failure, keep the previous slice for that
+	// provider: one flaky list call used to empty the tray ("No
+	// codespaces"), churn the workspace listeners, and then have
+	// everything "reappear" on the next poll. The ProviderStatus row
+	// already tells the user the provider is failing.
+	if !ghOK {
+		ghWorkspaces = filterWorkspacesByProvider(oldWorkspaces, provider.NameGitHub)
+		codespaces = oldCodespaces
+	}
+	if !coderOK {
+		coderWorkspaces = filterWorkspacesByProvider(oldWorkspaces, provider.NameCoder)
+	}
 
 	workspaces := append(ghWorkspaces, coderWorkspaces...)
 
 	log.Printf("poll: fetched %d github codespaces and %d total workspaces", len(codespaces), len(workspaces))
 
-	oldCodespaces := d.Codespaces()
-	oldWorkspaces := d.Workspaces()
 	d.SetCodespaces(codespaces)
 	d.SetWorkspaces(workspaces)
 
@@ -248,12 +262,15 @@ func workspacesDiffer(a, b []provider.Workspace) bool {
 // `coder` process can't pin the in-flight poll slot indefinitely; on
 // timeout the context error surfaces as a regular list error and the
 // ProviderStatus banner explains.
-func (d *Daemon) pollProvider(name, cli string, list func(ctx context.Context) ([]provider.Workspace, error)) []provider.Workspace {
+// The boolean result distinguishes "listed successfully" from "provider
+// failed" so runPoll can keep the previous cached slice on a transient
+// failure instead of flashing the tray empty.
+func (d *Daemon) pollProvider(name, cli string, list func(ctx context.Context) ([]provider.Workspace, error)) ([]provider.Workspace, bool) {
 	if err := provider.RequireCommand(cli); err != nil {
 		log.Printf("poll(%s): %v", name, err)
 		d.setProviderStatus(name, ProviderStatus{Available: false, Err: err})
 		d.updateEffectiveListErr(name, err)
-		return nil
+		return nil, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), pollListTimeout)
 	defer cancel()
@@ -264,9 +281,9 @@ func (d *Daemon) pollProvider(name, cli string, list func(ctx context.Context) (
 	d.setProviderStatus(name, ProviderStatus{Available: true, Err: err})
 	d.updateEffectiveListErr(name, err)
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	return workspaces
+	return workspaces, true
 }
 
 // updateEffectiveListErr writes listErr only when the named provider
@@ -309,6 +326,13 @@ func codespacesToWorkspaces(items []codespace.Codespace) []provider.Workspace {
 
 func (d *Daemon) refreshCoderWorkspacesAsync(done func()) {
 	go func() {
+		// Hold the poll slot: this read-modify-write of the workspace list
+		// otherwise races a concurrent runPoll — a stale snapshot taken
+		// here could clobber the poll's fresh GitHub data (or resurrect a
+		// just-deleted workspace) until the next 15-minute backstop poll.
+		d.acquirePoll()
+		defer d.releasePoll()
+
 		manager := provider.NewCoderManager(d.Cfg)
 		workspaces, err := manager.ListAllWorkspaces()
 		oldWorkspaces := d.Workspaces()
