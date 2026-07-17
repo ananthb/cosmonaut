@@ -194,10 +194,12 @@ func (m createModel) update(msg tea.Msg, d *AppletData) (createModel, tea.Cmd) {
 		// model on the next switchToFresh(viewCreate, ...).
 		m = m.clear()
 		// Switch to detail for the new workspace + force a poll so the
-		// list catches up.
+		// list catches up. pollDoneMsg is routed to the list and detail
+		// models regardless of focus (a bare reloadMsg went to whatever
+		// view was active, so the list never rebuilt its rows).
 		ws := msg.workspace
 		return m, tea.Batch(
-			func() tea.Msg { _ = d.Poll(); return reloadMsg{} },
+			func() tea.Msg { return pollDoneMsg{result: d.Poll()} },
 			emitFlash(fmt.Sprintf("Created %s", ws.Name), false),
 			switchTo(viewDetail, ws),
 		)

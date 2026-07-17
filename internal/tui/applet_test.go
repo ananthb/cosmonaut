@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -190,5 +191,30 @@ func TestAppletRenderHeaderHidesCreateWhenInactive(t *testing.T) {
 
 	if strings.Contains(m.renderHeader(), "Create") {
 		t.Error("renderHeader() should not include the Create tab when no form is active")
+	}
+}
+
+// TestCreateDoneRoutedWhileOnAnotherView locks in typed message routing:
+// a createDoneMsg arriving while the user tabbed away must still reach the
+// create model — before the fix it was dropped and the form was stuck in
+// submitting=true forever (which also swallows all key input).
+func TestCreateDoneRoutedWhileOnAnotherView(t *testing.T) {
+	d := NewAppletData(&config.Config{Targets: map[string]config.Target{}}, "")
+	m := NewAppletModel(d)
+	m.width, m.height = 120, 40
+
+	updated, _ := m.Update(switchViewMsg{view: viewCreate, reset: true})
+	m = updated.(AppletModel)
+	m.create.submitting = true
+
+	// Simulate the user parking the form and returning to the list.
+	updated, _ = m.Update(switchViewMsg{view: viewList})
+	m = updated.(AppletModel)
+
+	// The async create fails while the list is focused.
+	updated, _ = m.Update(createDoneMsg{err: fmt.Errorf("boom")})
+	m = updated.(AppletModel)
+	if m.create.submitting {
+		t.Fatal("createDoneMsg was not delivered to the create model while unfocused")
 	}
 }

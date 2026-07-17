@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -209,10 +211,43 @@ func (m AppletModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case pollDoneMsg:
-		// Sub-views read directly from data on render; just re-issue a
-		// reload so the list rebuilds its row index.
-		listM, cmd := m.list.update(reloadMsg{}, m.data)
+		// Sub-views read directly from data on render; re-issue a reload
+		// so the list rebuilds its row index AND the detail view re-syncs
+		// its workspace snapshot (otherwise a detail view being watched
+		// rendered stale state until the user pressed a key).
+		listM, c1 := m.list.update(reloadMsg{}, m.data)
 		m.list = listM
+		detailM, c2 := m.detail.update(reloadMsg{}, m.data)
+		m.detail = detailM
+		return m, tea.Batch(c1, c2)
+
+	// Model-specific async results are routed by TYPE, not to whichever
+	// view happens to be focused: a createDoneMsg that landed while the
+	// user was on another tab used to be dropped, leaving the create form
+	// stuck in submitting=true forever (it drops all key input in that
+	// state, so the tab could never even be dismissed). Same idea for the
+	// list's double-esc timer and the settings auth probe.
+	case createDoneMsg:
+		createM, cmd := m.create.update(msg, m.data)
+		m.create = createM
+		return m, cmd
+
+	case escTimeoutMsg:
+		listM, cmd := m.list.update(msg, m.data)
+		m.list = listM
+		return m, cmd
+
+	case authStatusMsg:
+		settingsM, cmd := m.settings.update(msg, m.data)
+		m.settings = settingsM
+		return m, cmd
+
+	case spinner.TickMsg:
+		// Only the create form animates a spinner; deliver ticks there
+		// even while another view is focused so an in-flight submit keeps
+		// animating when the user tabs back.
+		createM, cmd := m.create.update(msg, m.data)
+		m.create = createM
 		return m, cmd
 
 	case flashMsg:
@@ -455,6 +490,24 @@ func RunApplet(data *AppletData, initial ...AppletInitial) error {
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
+}
+
+// deleteWorkspaceCmd deletes ws, flashes the outcome, then re-polls and
+// delivers the fresh list as pollDoneMsg so the deleted workspace
+// disappears immediately. The previous fire-and-forget `go d.Poll()`
+// discarded the poll result, leaving the deleted workspace listed and
+// selectable until the 15-minute backstop poll. Shared by the list and
+// detail confirm-delete flows.
+func deleteWorkspaceCmd(d *AppletData, ws provider.Workspace) tea.Cmd {
+	return tea.Sequence(
+		func() tea.Msg {
+			if err := d.DeleteWorkspace(ws.Provider, ws.Name); err != nil {
+				return flashMsg{text: fmt.Sprintf("delete %s: %v", ws.Name, err), err: true}
+			}
+			return flashMsg{text: fmt.Sprintf("Deleted %s", ws.Name)}
+		},
+		func() tea.Msg { return pollDoneMsg{result: d.Poll()} },
+	)
 }
 
 // emitFlash returns a tea.Cmd that pushes a transient status banner.

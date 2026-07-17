@@ -171,13 +171,7 @@ func (m detailModel) handleConfirmDelete(msg tea.KeyMsg, d *AppletData) (detailM
 		ws := m.workspace
 		m.confirmDelete = false
 		return m, tea.Batch(
-			func() tea.Msg {
-				if err := d.DeleteWorkspace(ws.Provider, ws.Name); err != nil {
-					return flashMsg{text: fmt.Sprintf("delete %s: %v", ws.Name, err), err: true}
-				}
-				go func() { d.Poll() }()
-				return flashMsg{text: fmt.Sprintf("Deleted %s", ws.Name)}
-			},
+			deleteWorkspaceCmd(d, ws),
 			switchTo(viewList, nil),
 		)
 	case "n", "N", "esc":

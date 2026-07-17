@@ -193,13 +193,7 @@ func (m listModel) handleConfirmDelete(msg tea.KeyMsg, d *AppletData) (listModel
 	case "y", "Y", "enter":
 		ws := *m.confirmDelete
 		m.confirmDelete = nil
-		return m, func() tea.Msg {
-			if err := d.DeleteWorkspace(ws.Provider, ws.Name); err != nil {
-				return flashMsg{text: fmt.Sprintf("delete %s: %v", ws.Name, err), err: true}
-			}
-			go func() { d.Poll() }()
-			return flashMsg{text: fmt.Sprintf("Deleted %s", ws.Name)}
-		}
+		return m, deleteWorkspaceCmd(d, ws)
 	case "n", "N", "esc", "q", "ctrl+c":
 		m.confirmDelete = nil
 	}
