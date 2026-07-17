@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -71,24 +72,49 @@ func (m *CoderManager) ListTemplates() ([]CoderTemplate, error) {
 	if err != nil {
 		return nil, err
 	}
-	var items []struct {
-		Template struct {
-			Name             string `json:"name"`
-			OrganizationName string `json:"organization_name"`
-		} `json:"Template"`
+	// Coder CLI versions differ on the row shape: some wrap each row in a
+	// {"Template": {...}} display object, others emit bare template
+	// objects. Try the wrapped shape first, fall back to bare, and error
+	// if a non-empty list produced zero templates (a shape we don't know
+	// would otherwise render an empty picker with no diagnostic).
+	type tpl struct {
+		Name             string `json:"name"`
+		OrganizationName string `json:"organization_name"`
 	}
-	if err := json.Unmarshal([]byte(out), &items); err != nil {
-		return nil, fmt.Errorf("parsing coder template list: %w", err)
+	var wrapped []struct {
+		Template tpl `json:"Template"`
 	}
-	result := make([]CoderTemplate, 0, len(items))
-	for _, item := range items {
-		if item.Template.Name == "" {
+	var rows []tpl
+	if err := json.Unmarshal([]byte(out), &wrapped); err == nil {
+		for _, item := range wrapped {
+			rows = append(rows, item.Template)
+		}
+	}
+	wrappedEmpty := true
+	for _, r := range rows {
+		if r.Name != "" {
+			wrappedEmpty = false
+			break
+		}
+	}
+	if wrappedEmpty {
+		var bare []tpl
+		if err := json.Unmarshal([]byte(out), &bare); err == nil {
+			rows = bare
+		}
+	}
+	result := make([]CoderTemplate, 0, len(rows))
+	for _, item := range rows {
+		if item.Name == "" {
 			continue
 		}
 		result = append(result, CoderTemplate{
-			Name:         item.Template.Name,
-			Organization: item.Template.OrganizationName,
+			Name:         item.Name,
+			Organization: item.OrganizationName,
 		})
+	}
+	if len(result) == 0 && strings.TrimSpace(out) != "" && strings.TrimSpace(out) != "[]" && strings.TrimSpace(out) != "null" {
+		return nil, fmt.Errorf("parsing coder template list: unrecognized JSON shape")
 	}
 	return result, nil
 }
@@ -97,11 +123,22 @@ func (m *CoderManager) ListRepositories() ([]string, error) {
 	return nil, nil
 }
 
+// ListWorkspacesForTarget returns the workspaces matching the target's
+// constraints. A constrained target (workspaceName or repository set) that
+// matches nothing returns an EMPTY slice — never the full list. The old
+// return-everything fallback meant a target for repo "acme/api" with no
+// matching workspace could hand the caller some unrelated workspace, which
+// ChooseWorkspace would then auto-select and the flow would open, stop, or
+// delete. Only a fully unconstrained target lists everything.
 func (m *CoderManager) ListWorkspacesForTarget(target config.Target) ([]Workspace, error) {
 	all, err := m.ListAllWorkspaces()
 	if err != nil {
 		return nil, err
 	}
+	return filterCoderWorkspacesForTarget(all, target), nil
+}
+
+func filterCoderWorkspacesForTarget(all []Workspace, target config.Target) []Workspace {
 	if target.Coder != nil && target.Coder.WorkspaceName != "" {
 		var filtered []Workspace
 		for _, ws := range all {
@@ -109,21 +146,23 @@ func (m *CoderManager) ListWorkspacesForTarget(target config.Target) ([]Workspac
 				filtered = append(filtered, ws)
 			}
 		}
-		return filtered, nil
+		return filtered
 	}
 	if target.Repository != "" {
+		// Exact matches only: the repository itself, or the workspace name
+		// CreateWorkspace derives from it (pathBase). The previous
+		// strings.Contains tier matched e.g. workspace "my-api-old" for
+		// repo "api".
 		var filtered []Workspace
 		repoName := pathBase(target.Repository)
 		for _, ws := range all {
-			if ws.Repository == target.Repository || ws.Name == repoName || strings.Contains(ws.Name, repoName) {
+			if ws.Repository == target.Repository || ws.Name == repoName {
 				filtered = append(filtered, ws)
 			}
 		}
-		if len(filtered) > 0 {
-			return filtered, nil
-		}
+		return filtered
 	}
-	return all, nil
+	return all
 }
 
 func (m *CoderManager) ResolveWorkspace(name string) (*Workspace, error) {
@@ -147,6 +186,9 @@ func (m *CoderManager) CreateWorkspace(target config.Target, interactive bool) (
 	if name == "" {
 		return nil, fmt.Errorf("coder target requires coder.workspaceName or a repository-derived default")
 	}
+	if !coderWorkspaceNameRe.MatchString(name) {
+		return nil, fmt.Errorf("invalid coder workspace name %q: must match %s", name, coderWorkspaceNameRe)
+	}
 
 	args := []string{"create"}
 	if org := m.targetOrganization(target); org != "" {
@@ -161,13 +203,19 @@ func (m *CoderManager) CreateWorkspace(target config.Target, interactive bool) (
 	for _, key := range keys {
 		args = append(args, "--parameter", fmt.Sprintf("%s=%s", key, target.Coder.Parameters[key]))
 	}
-	args = append(args, "--yes", name)
+	args = append(args, "--yes", "--", name)
 
 	if _, err := m.run(args...); err != nil {
 		return nil, err
 	}
 	return m.ResolveWorkspace(name)
 }
+
+// coderWorkspaceNameRe mirrors Coder's own workspace-name rules (hostname
+// label style). Validating here keeps names that start with '-' or contain
+// separators from ever reaching the CLI as arguments or landing in SSH
+// config filenames.
+var coderWorkspaceNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}$`)
 
 func (m *CoderManager) StartWorkspace(workspace *Workspace) (*Workspace, error) {
 	if workspace == nil {
@@ -176,8 +224,23 @@ func (m *CoderManager) StartWorkspace(workspace *Workspace) (*Workspace, error) 
 	if isCoderReadyState(workspace.State) {
 		return workspace, nil
 	}
+	if isCoderDeletingState(workspace.State) {
+		return nil, fmt.Errorf("coder workspace %q is being deleted", workspace.Name)
+	}
+	if isCoderBusyState(workspace.State) {
+		// A stop or cancel is still in flight; the CLI rejects `start` on a
+		// busy workspace, so wait for the transition to settle first.
+		settled, err := m.waitForWorkspaceState(workspace.Name, 60*time.Second, isCoderBusyState)
+		if err != nil {
+			return nil, err
+		}
+		workspace = settled
+		if isCoderReadyState(workspace.State) {
+			return workspace, nil
+		}
+	}
 	if !isCoderTransitionalState(workspace.State) {
-		if _, err := m.run("start", "--yes", workspace.Name); err != nil {
+		if _, err := m.run("start", "--yes", "--", workspace.Name); err != nil {
 			return nil, err
 		}
 	}
@@ -202,16 +265,12 @@ func (m *CoderManager) DeleteWorkspace(name string) error {
 }
 
 func (m *CoderManager) EnsureReachable(workspace *Workspace) error {
-	latest, err := m.waitForWorkspaceState(workspace.Name, 90*time.Second, func(state string) bool {
+	// waitForWorkspaceState only returns nil error once the workspace is
+	// ready; failure states and timeout surface as errors.
+	_, err := m.waitForWorkspaceState(workspace.Name, 90*time.Second, func(state string) bool {
 		return isCoderReadyState(state) || isCoderTransitionalState(state)
 	})
-	if err != nil {
-		return err
-	}
-	if isCoderReadyState(latest.State) {
-		return nil
-	}
-	return fmt.Errorf("coder workspace %q is not ready yet (state: %s)", workspace.Name, latest.State)
+	return err
 }
 
 func (m *CoderManager) PrepareSSH(paths sshconfig.SSHPaths, workspace *Workspace, opts sshconfig.ManagedExtrasOptions) (string, error) {
@@ -374,23 +433,26 @@ func sortedKeys(maybe map[string]string) []string {
 	return keys
 }
 
+// waitForWorkspaceState polls until the workspace is ready, returning an
+// error when it lands in a state the allow callback rejects (e.g. failed)
+// or when the timeout expires. It used to return nil in both of those
+// cases, so StartWorkspace reported success for a workspace whose build
+// had failed.
 func (m *CoderManager) waitForWorkspaceState(name string, timeout time.Duration, allow func(string) bool) (*Workspace, error) {
 	deadline := time.Now().Add(timeout)
-	var last *Workspace
 	for {
 		ws, err := m.ResolveWorkspace(name)
 		if err != nil {
 			return nil, err
 		}
-		last = ws
 		if isCoderReadyState(ws.State) {
 			return ws, nil
 		}
 		if !allow(ws.State) {
-			return ws, nil
+			return ws, fmt.Errorf("coder workspace %q entered state %q while waiting for it to become ready", name, ws.State)
 		}
 		if time.Now().After(deadline) {
-			return last, nil
+			return ws, fmt.Errorf("timed out after %s waiting for coder workspace %q to become ready (last state: %s)", timeout, name, ws.State)
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -408,6 +470,28 @@ func isCoderReadyState(state string) bool {
 func isCoderTransitionalState(state string) bool {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "created", "creating", "pending", "starting", "start", "initializing":
+		return true
+	default:
+		return false
+	}
+}
+
+// isCoderBusyState reports states where a stop/cancel transition is in
+// flight — the workspace is neither startable nor ready until it settles.
+func isCoderBusyState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "stopping", "canceling", "cancelling":
+		return true
+	default:
+		return false
+	}
+}
+
+// isCoderDeletingState reports a workspace that is going away; starting it
+// is never right.
+func isCoderDeletingState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "deleting", "deleted":
 		return true
 	default:
 		return false

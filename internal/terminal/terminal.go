@@ -77,8 +77,8 @@ end run`
 }
 
 // ShellQuote wraps s in POSIX single quotes so it can be safely embedded in
-// a shell command. Empty strings return `''`. Embedded single quotes are
-// escaped via the `'\''` idiom.
+// a shell command. Empty strings return `”`. Embedded single quotes are
+// escaped via the `'\”` idiom.
 //
 // Strings are returned bare only when every byte is on a conservative
 // allowlist. The old implementation blocklisted known metacharacters and

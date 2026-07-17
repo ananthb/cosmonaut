@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/linuskendall/cosmonaut/internal/config"
 )
 
 // writeFakeCoder creates a script named "coder" in a temp dir that emits the
@@ -125,5 +127,84 @@ func TestDeleteWorkspaceRequiresName(t *testing.T) {
 	m := &CoderManager{}
 	if err := m.DeleteWorkspace("   "); err == nil {
 		t.Fatalf("expected error for blank workspace name, got nil")
+	}
+}
+
+func TestFilterCoderWorkspacesForTarget(t *testing.T) {
+	all := []Workspace{
+		{Name: "api", Repository: ""},
+		{Name: "my-api-old", Repository: ""},
+		{Name: "web", Repository: "acme/web"},
+		{Name: "unrelated", Repository: ""},
+	}
+
+	t.Run("workspace name constraint matches exactly", func(t *testing.T) {
+		got := filterCoderWorkspacesForTarget(all, config.Target{
+			Coder: &config.CoderTargetConfig{WorkspaceName: "api"},
+		})
+		if len(got) != 1 || got[0].Name != "api" {
+			t.Errorf("got %v", got)
+		}
+	})
+
+	t.Run("workspace name constraint with no match returns empty, never all", func(t *testing.T) {
+		got := filterCoderWorkspacesForTarget(all, config.Target{
+			Coder: &config.CoderTargetConfig{WorkspaceName: "nope"},
+		})
+		if len(got) != 0 {
+			t.Errorf("constrained no-match must be empty, got %v", got)
+		}
+	})
+
+	t.Run("repository constraint matches repo and derived name only", func(t *testing.T) {
+		got := filterCoderWorkspacesForTarget(all, config.Target{Repository: "acme/api"})
+		if len(got) != 1 || got[0].Name != "api" {
+			t.Errorf("want exact-name match only (no substring tier), got %v", got)
+		}
+	})
+
+	t.Run("repository constraint with no match returns empty, never all", func(t *testing.T) {
+		got := filterCoderWorkspacesForTarget(all, config.Target{Repository: "acme/missing"})
+		if len(got) != 0 {
+			t.Errorf("constrained no-match must be empty, got %v", got)
+		}
+	})
+
+	t.Run("unconstrained target lists everything", func(t *testing.T) {
+		got := filterCoderWorkspacesForTarget(all, config.Target{})
+		if len(got) != len(all) {
+			t.Errorf("got %d workspaces, want %d", len(got), len(all))
+		}
+	})
+}
+
+func TestCoderStateClassifiers(t *testing.T) {
+	for state, want := range map[string]struct{ busy, deleting bool }{
+		"stopping":   {busy: true},
+		"Canceling":  {busy: true},
+		"cancelling": {busy: true},
+		"deleting":   {deleting: true},
+		"deleted":    {deleting: true},
+		"running":    {},
+		"failed":     {},
+	} {
+		if got := isCoderBusyState(state); got != want.busy {
+			t.Errorf("isCoderBusyState(%q) = %v, want %v", state, got, want.busy)
+		}
+		if got := isCoderDeletingState(state); got != want.deleting {
+			t.Errorf("isCoderDeletingState(%q) = %v, want %v", state, got, want.deleting)
+		}
+	}
+}
+
+func TestCreateWorkspaceRejectsInvalidName(t *testing.T) {
+	m := NewCoderManager(nil)
+	for _, name := range []string{"-leading-dash", "has/slash", "has space", "..", "-"} {
+		_, err := m.CreateWorkspace(config.Target{
+			Coder: &config.CoderTargetConfig{Template: "tpl", WorkspaceName: name},
+		}, false)
+		if err == nil || !strings.Contains(err.Error(), "invalid coder workspace name") {
+			t.Errorf("CreateWorkspace(%q): expected name validation error, got %v", name, err)
+		}
 	}
 }
