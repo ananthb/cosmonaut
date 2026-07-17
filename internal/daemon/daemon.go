@@ -6,7 +6,9 @@ package daemon
 import (
 	"log"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -46,6 +48,7 @@ type Daemon struct {
 	pendingRebuild bool        // a rebuild was deferred while the tray was in-use
 	rebuildTimer   *time.Timer // wakes up to retry a deferred rebuild after the gate window
 	stopCh         chan struct{}
+	stopOnce       sync.Once
 	sessions       *SessionTracker
 	forwards       *PortForwardManager
 
@@ -168,6 +171,18 @@ func (d *Daemon) Run() error {
 
 	log.Printf("applet started (pid %d)", os.Getpid())
 
+	// Release inhibitors and kill port-forward children on SIGTERM/SIGINT
+	// (logout, systemctl --user stop, Ctrl-C). Without this the Setpgid
+	// children survive daemon death — worst case an orphaned block-mode
+	// systemd-inhibit that keeps the machine from ever sleeping.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("received %s, shutting down", sig)
+		d.Stop()
+	}()
+
 	// Run the initial poll synchronously so the tray menu has
 	// codespace data before it is first displayed.
 	d.poll()
@@ -198,27 +213,26 @@ func (d *Daemon) Run() error {
 	return nil
 }
 
-// Stop signals the applet to shut down.
+// Stop signals the applet to shut down. Safe to call from any goroutine
+// and more than once (tray Quit racing a SIGTERM must not double-close
+// stopCh or run cleanup twice).
 func (d *Daemon) Stop() {
-	select {
-	case <-d.stopCh:
-		return
-	default:
+	d.stopOnce.Do(func() {
 		close(d.stopCh)
-	}
 
-	if d.sessions != nil {
-		d.sessions.Stop()
-	}
-	if d.forwards != nil {
-		d.forwards.StopAll()
-	}
+		if d.sessions != nil {
+			d.sessions.Stop()
+		}
+		if d.forwards != nil {
+			d.forwards.StopAll()
+		}
 
-	if d.app != nil {
-		d.app.Quit()
-	}
+		if d.app != nil {
+			d.app.Quit()
+		}
 
-	log.Println("applet stopped")
+		log.Println("applet stopped")
+	})
 }
 
 // Codespaces returns the last-polled codespace list.

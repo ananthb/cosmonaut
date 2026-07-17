@@ -87,6 +87,9 @@ func (m *PortForwardManager) StartProtocol(providerName, workspaceName, protocol
 	ctx, cancel := context.WithCancel(context.Background())
 	command, args := buildPortForwardCommand(key)
 	cmd := exec.CommandContext(ctx, command, args...)
+	// On Linux, Pdeathsig ensures a crashed/SIGKILLed daemon can't leave
+	// gh/coder forward processes holding local ports.
+	cmd.SysProcAttr = daemonChildSysProcAttr()
 	output := &boundedBuffer{limit: 16 * 1024}
 	cmd.Stdout = output
 	cmd.Stderr = output

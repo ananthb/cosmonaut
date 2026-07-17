@@ -32,7 +32,7 @@ func (s *systemdInhibitInhibitor) Engage(mode string) error {
 		"--mode=block",
 		"sleep", "infinity",
 	)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = daemonChildSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		return err
 	}
