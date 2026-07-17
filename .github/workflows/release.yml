@@ -11,6 +11,11 @@ on:
 # replacement that runs on any Linux box. The publish job aggregates
 # all artifacts, computes SHA256SUMS, cosign-signs the checksum file,
 # and uploads the GitHub release.
+#
+# Every third-party action is pinned to a full commit SHA: this job
+# holds id-token: write for keyless signing, so a mutable tag (or
+# branch) reference would let a compromised action tamper with
+# artifacts *before* they're checksummed and signed.
 
 jobs:
   linux:
@@ -20,19 +25,19 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
 
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
 
-      - uses: nix-community/cache-nix-action@v7
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
           gc-max-store-size-linux: 5G
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
 
@@ -44,20 +49,29 @@ jobs:
             libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev \
             libxxf86vm-dev libxext-dev libxfixes-dev
 
-      - name: Build hermetic AppImage via nix-appimage
-        run: |
-          nix build .#packages.x86_64-linux.appimage -o result-appimage
-          mkdir -p build
-          cp -L result-appimage build/cosmonaut-amd64.AppImage
-          chmod +w build/cosmonaut-amd64.AppImage
-
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           distribution: goreleaser
           version: '~> v2'
           args: release --clean --config .goreleaser.linux.yaml
 
-      - uses: actions/upload-artifact@v4
+      # Build the AppImage AFTER goreleaser: `release --clean` wipes the
+      # dist dir (build/), so anything staged there beforehand is deleted.
+      # A previous ordering did exactly that — the AppImage vanished and
+      # the release shipped without it, silently, because the upload
+      # step's other glob still matched.
+      - name: Build hermetic AppImage via nix-appimage
+        run: |
+          nix build .#packages.x86_64-linux.appimage -o result-appimage
+          cp -L result-appimage build/cosmonaut-amd64.AppImage
+          chmod +w build/cosmonaut-amd64.AppImage
+
+      - name: Assert all Linux artifacts exist
+        run: |
+          test -s build/cosmonaut-amd64.tar.gz
+          test -s build/cosmonaut-amd64.AppImage
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux
           path: |
@@ -72,21 +86,26 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
 
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           distribution: goreleaser
           version: '~> v2'
           args: release --clean --config .goreleaser.darwin.yaml
 
-      - uses: actions/upload-artifact@v4
+      - name: Assert all macOS artifacts exist
+        run: |
+          test -s build/cosmonaut-macos-arm64.dmg
+          test -s build/cosmonaut-macos-arm64.tar.gz
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: macos
           path: |
@@ -102,9 +121,9 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.10.1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
           merge-multiple: true
@@ -115,11 +134,19 @@ jobs:
         # cosign signature, then trust the listed hashes for each
         # artifact. Avoids the .sig/.pem pair-per-file fanout.
         #
-        # Write the checksum file via a tempfile so re-runs (where
-        # artifacts/SHA256SUMS may already exist) don't self-reference
-        # the freshly-truncated file via the `*` glob.
+        # Assert the exact artifact set first: a job that silently
+        # dropped an artifact must fail here, not ship a partial
+        # release. Remove any stale checksum/signature files from a
+        # previous partial run so they can't end up inside the new
+        # SHA256SUMS, then write via a tempfile so the `*` glob can't
+        # self-reference the freshly-truncated file.
         run: |
-          sha256sum * > ../SHA256SUMS
+          for f in cosmonaut-amd64.tar.gz cosmonaut-amd64.AppImage \
+                   cosmonaut-macos-arm64.dmg cosmonaut-macos-arm64.tar.gz; do
+            test -s "$f" || { echo "missing release artifact: $f" >&2; exit 1; }
+          done
+          rm -f SHA256SUMS SHA256SUMS.sig SHA256SUMS.pem
+          sha256sum -- * > ../SHA256SUMS
           mv ../SHA256SUMS SHA256SUMS
           cosign sign-blob --yes \
             --output-signature SHA256SUMS.sig \
@@ -127,7 +154,7 @@ jobs:
             SHA256SUMS
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           generate_release_notes: true
           files: artifacts/*
