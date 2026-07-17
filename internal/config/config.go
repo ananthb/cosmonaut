@@ -7,9 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/tailscale/hujson"
 )
 
 type Config struct {
@@ -374,18 +375,14 @@ type PortForward struct {
 	Protocol   string `json:"protocol,omitempty"`
 }
 
-var (
-	blockCommentRe  = regexp.MustCompile(`(?s)/\*.*?\*/`)
-	lineCommentRe   = regexp.MustCompile(`(?m)^\s*//.*$`)
-	trailingCommaRe = regexp.MustCompile(`,\s*([}\]])`)
-)
-
-// ParseJSONC strips comments and trailing commas, then returns clean JSON bytes.
+// ParseJSONC strips comments and trailing commas, then returns clean JSON
+// bytes. The conversion uses a real JWCC parser (tailscale/hujson), not
+// regexes: comment markers or ",}" sequences inside string values — shell
+// snippets in coder.parameters, glob patterns — pass through untouched
+// instead of silently corrupting the config, and malformed input is
+// reported as an error instead of producing garbage.
 func ParseJSONC(source string) ([]byte, error) {
-	s := blockCommentRe.ReplaceAllString(source, "")
-	s = lineCommentRe.ReplaceAllString(s, "")
-	s = trailingCommaRe.ReplaceAllString(s, "$1")
-	return []byte(s), nil
+	return hujson.Standardize([]byte(source))
 }
 
 // LoadConfig reads a JSONC config file and returns the parsed Config.
@@ -523,17 +520,4 @@ func DaemonFieldsHelp() string {
 		fmt.Fprintf(&b, "  %-22s %s\n", f.JSON, f.Desc)
 	}
 	return b.String()
-}
-
-// ParseJSONCAny parses JSONC into an arbitrary value (used for Zed settings).
-func ParseJSONCAny(source string) (any, error) {
-	clean, err := ParseJSONC(source)
-	if err != nil {
-		return nil, err
-	}
-	var v any
-	if err := json.Unmarshal(clean, &v); err != nil {
-		return nil, err
-	}
-	return v, nil
 }

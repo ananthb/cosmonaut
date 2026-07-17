@@ -59,7 +59,7 @@
           version = "unstable";
           src = ./.;
 
-          vendorHash = "sha256-Hc22uW6Eq1tY567WipjS8GCPWNJcT9Db5Wpovs/MAdU=";
+          vendorHash = "sha256-lXAVp3yJWoT/sok4o5GsBIFgKvLRD0KQj40R47CT5XQ=";
 
           env.CGO_ENABLED = 1;
           tags = [ "netgo" ];
