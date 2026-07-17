@@ -231,15 +231,10 @@ func (d *Daemon) refreshMainWindowBanner() {
 }
 
 func (d *Daemon) buildAuthSection(win fyne.Window) fyne.CanvasObject {
-	authed := codespace.EnsureGHAuth(d.Runner) == nil
-
-	var statusText string
-	if authed {
-		statusText = "GitHub: authenticated"
-	} else {
-		statusText = "GitHub: not authenticated"
-	}
-	statusLabel := widget.NewLabel(statusText)
+	// EnsureGHAuth execs `gh auth status` (network round-trip) and this
+	// builder runs on the Fyne main thread on every settings rebuild —
+	// probe asynchronously and fill the section in via fyne.Do.
+	statusLabel := widget.NewLabel("GitHub: checking…")
 
 	// After an auth-state change, the section's button label and the tray
 	// menu both need to reflect the new state. Rebuilding the whole settings
@@ -253,40 +248,55 @@ func (d *Daemon) buildAuthSection(win fyne.Window) fyne.CanvasObject {
 		}
 	}
 
-	var actionBtn *widget.Button
-	if authed {
-		actionBtn = widget.NewButton("Remove auth", func() {
-			actionBtn.Disable()
-			go func() {
-				_, err := d.Runner.Run([]string{"auth", "logout", "--hostname", "github.com"})
-				fyne.Do(func() {
-					if err != nil {
-						log.Printf("auth logout: %v", err)
-						dialog.ShowError(fmt.Errorf("gh auth logout failed: %w", err), win)
-						actionBtn.Enable()
-						return
-					}
-					refresh()
-				})
-			}()
-		})
-	} else {
-		actionBtn = widget.NewButton("Log in...", func() {
-			actionBtn.Disable()
-			go func() {
-				_, err := d.Runner.Run([]string{"auth", "login", "--web", "--hostname", "github.com"})
-				fyne.Do(func() {
-					if err != nil {
-						log.Printf("auth login: %v", err)
-						dialog.ShowError(fmt.Errorf("gh auth login failed: %w", err), win)
-						actionBtn.Enable()
-						return
-					}
-					refresh()
-				})
-			}()
-		})
+	actionBtn := widget.NewButton("Log in...", nil)
+	actionBtn.Disable()
+
+	logout := func() {
+		actionBtn.Disable()
+		go func() {
+			_, err := d.Runner.Run([]string{"auth", "logout", "--hostname", "github.com"})
+			fyne.Do(func() {
+				if err != nil {
+					log.Printf("auth logout: %v", err)
+					dialog.ShowError(fmt.Errorf("gh auth logout failed: %w", err), win)
+					actionBtn.Enable()
+					return
+				}
+				refresh()
+			})
+		}()
 	}
+	login := func() {
+		actionBtn.Disable()
+		go func() {
+			_, err := d.Runner.Run([]string{"auth", "login", "--web", "--hostname", "github.com"})
+			fyne.Do(func() {
+				if err != nil {
+					log.Printf("auth login: %v", err)
+					dialog.ShowError(fmt.Errorf("gh auth login failed: %w", err), win)
+					actionBtn.Enable()
+					return
+				}
+				refresh()
+			})
+		}()
+	}
+
+	go func() {
+		authed := codespace.EnsureGHAuth(d.Runner) == nil
+		fyne.Do(func() {
+			if authed {
+				statusLabel.SetText("GitHub: authenticated")
+				actionBtn.SetText("Remove auth")
+				actionBtn.OnTapped = logout
+			} else {
+				statusLabel.SetText("GitHub: not authenticated")
+				actionBtn.SetText("Log in...")
+				actionBtn.OnTapped = login
+			}
+			actionBtn.Enable()
+		})
+	}()
 
 	return container.NewHBox(statusLabel, layout.NewSpacer(), actionBtn)
 }

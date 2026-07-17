@@ -28,6 +28,14 @@ func (d *Daemon) canDeleteWorkspace(providerName string) bool {
 	if providerName != provider.NameGitHub && providerName != provider.NameCoder {
 		return false
 	}
+	return d.providerUsable(providerName)
+}
+
+// providerUsable reports whether the provider's CLI was present and its
+// last list call succeeded, per the most recent poll. It never execs
+// anything, so it is safe to call from the Fyne main thread (tray menu
+// builders, sidebar). Zero CheckedAt (no poll yet) counts as unusable.
+func (d *Daemon) providerUsable(providerName string) bool {
 	status := d.StatusFor(providerName)
 	if status.CheckedAt.IsZero() {
 		return false

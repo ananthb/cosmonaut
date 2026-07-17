@@ -96,13 +96,20 @@ func newCreateModel(d *AppletData) createModel {
 		}
 	}
 
-	// Default provider selection. Prefer whichever provider is available
-	// (CLI + auth); if both are, default to GitHub but allow toggling.
-	// The provider row is hidden when only one is in play. Coder also
+	// Default provider selection. Prefer whichever provider CLI is
+	// installed; if both are, default to GitHub but allow toggling. The
+	// provider row is hidden when only one is in play. Coder also
 	// requires at least one Coder-tagged target since create needs a
 	// template selector.
-	gh := provider.IsGitHubAvailable()
-	cd := provider.IsCoderAvailable() && len(m.coderTargets) > 0
+	//
+	// Deliberately only a PATH lookup here, not the full auth probe:
+	// IsGitHubAvailable/IsCoderAvailable each exec the CLI with a 5s
+	// timeout, and this constructor runs inside Update on the UI thread —
+	// a hung CLI froze the whole TUI for up to 10 seconds when the user
+	// pressed "n". Auth problems still surface at submit with a clear
+	// error message.
+	gh := provider.HasGitHubCLI()
+	cd := provider.HasCoderCLI() && len(m.coderTargets) > 0
 	switch {
 	case gh && cd:
 		m.providerName = provider.NameGitHub

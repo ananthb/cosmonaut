@@ -264,22 +264,35 @@ func (d *AppletData) RefreshPorts(csName string) PortCacheEntry {
 }
 
 // EnsurePortsCache returns the cached ports entry for a codespace, kicking
-// off an async refresh when there is no cached entry yet. Returning the
-// stale entry while a refresh runs keeps the UI responsive on first open.
+// off ONE async refresh when there is no cached entry yet. An entry that is
+// already Loading is returned as-is — every repaint used to stack another
+// `gh codespace ports` subprocess onto the in-flight one. The Loading
+// placeholder is written under the lock before the goroutine starts so
+// concurrent callers deduplicate too.
 func (d *AppletData) EnsurePortsCache(csName string, onReady func()) PortCacheEntry {
+	entry, _ := d.ensurePortsCache(csName, onReady)
+	return entry
+}
+
+// ensurePortsCache additionally reports whether THIS call started the
+// fetch — only then will onReady eventually fire, so callers that wait on
+// it must check the flag.
+func (d *AppletData) ensurePortsCache(csName string, onReady func()) (PortCacheEntry, bool) {
 	d.mu.Lock()
-	entry, ok := d.ports[csName]
-	d.mu.Unlock()
-	if ok && !entry.Loading {
-		return entry
+	if entry, ok := d.ports[csName]; ok {
+		d.mu.Unlock()
+		return entry, false
 	}
+	loading := PortCacheEntry{Loading: true}
+	d.ports[csName] = loading
+	d.mu.Unlock()
 	go func() {
 		d.RefreshPorts(csName)
 		if onReady != nil {
 			onReady()
 		}
 	}()
-	return entry
+	return loading, true
 }
 
 // codespaceToWorkspace translates the GitHub-specific codespace shape into

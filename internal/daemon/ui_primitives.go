@@ -18,23 +18,32 @@ import (
 // A small filled circle indicating codespace state. Matches the dots
 // used in tray menu and sidebar.
 func stateDot(state string) *canvas.Circle {
-	var c color.Color
-	switch state {
-	case "Available":
-		c = statusOK
-	case "Starting":
-		c = statusWarn
-	case "Stopped":
-		c = theme.Color(theme.ColorNameDisabled)
-	case "Error":
-		c = statusError
-	default:
-		c = theme.Color(theme.ColorNameDisabled)
-	}
-	dot := canvas.NewCircle(c)
+	dot := canvas.NewCircle(stateDotColor(state))
 	dot.StrokeWidth = 0
 	dot.Resize(fyne.NewSize(8, 8))
 	return dot
+}
+
+// updateStateDot recolors an existing dot in place (e.g. when an async
+// probe finishes). Must be called on the Fyne main thread.
+func updateStateDot(dot *canvas.Circle, state string) {
+	dot.FillColor = stateDotColor(state)
+	dot.Refresh()
+}
+
+func stateDotColor(state string) color.Color {
+	switch state {
+	case "Available":
+		return statusOK
+	case "Starting":
+		return statusWarn
+	case "Stopped":
+		return theme.Color(theme.ColorNameDisabled)
+	case "Error":
+		return statusError
+	default:
+		return theme.Color(theme.ColorNameDisabled)
+	}
 }
 
 // ── caption ─────────────────────────────────────────────────────────────

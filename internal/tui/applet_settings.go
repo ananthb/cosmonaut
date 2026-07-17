@@ -44,6 +44,29 @@ type settingsModel struct {
 	targetField  int // 0=autoStop, 1=preWarm
 	targetStop   int
 	targetWarm   int
+
+	// authState caches the result of the async `gh auth status` probe.
+	// The probe execs gh (network round-trip, up to seconds); running it
+	// inside View blocked the whole TUI on every repaint.
+	authState authProbeState
+}
+
+type authProbeState int
+
+const (
+	authUnknown authProbeState = iota
+	authYes
+	authNo
+)
+
+// authStatusMsg carries the async auth probe result back to the model.
+type authStatusMsg struct{ authed bool }
+
+// probeAuthCmd re-checks GitHub auth in the background.
+func probeAuthCmd() tea.Cmd {
+	return func() tea.Msg {
+		return authStatusMsg{authed: codespace.EnsureGHAuth(codespace.DefaultGHRunner{}) == nil}
+	}
 }
 
 func newSettingsModel(d *AppletData) settingsModel {
@@ -95,11 +118,18 @@ func defaultStr(s, fallback string) string {
 	return s
 }
 
-func (m settingsModel) Init() tea.Cmd { return nil }
+func (m settingsModel) Init() tea.Cmd { return probeAuthCmd() }
 
 func (m settingsModel) update(msg tea.Msg, d *AppletData) (settingsModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		return m, nil
+	case authStatusMsg:
+		if msg.authed {
+			m.authState = authYes
+		} else {
+			m.authState = authNo
+		}
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg, d)
@@ -307,20 +337,25 @@ func (m settingsModel) activate(d *AppletData) (settingsModel, tea.Cmd) {
 }
 
 func (m settingsModel) toggleAuth(d *AppletData) (settingsModel, tea.Cmd) {
-	runner := codespace.DefaultGHRunner{}
-	authed := codespace.EnsureGHAuth(runner) == nil
-	if authed {
-		return m, func() tea.Msg {
+	// Decide from the cached probe (never re-exec gh inside Update); the
+	// follow-up probeAuthCmd refreshes the cache once the action lands.
+	switch m.authState {
+	case authUnknown:
+		return m, tea.Batch(emitFlash("Still checking auth status…", false), probeAuthCmd())
+	case authYes:
+		runner := codespace.DefaultGHRunner{}
+		return m, tea.Sequence(func() tea.Msg {
 			_, err := runner.Run([]string{"auth", "logout", "--hostname", "github.com"})
 			if err != nil {
 				return flashMsg{text: "gh auth logout: " + err.Error(), err: true}
 			}
 			return flashMsg{text: "Logged out"}
-		}
-	}
-	return m, func() tea.Msg {
-		terminal.OpenCommandInTerminal(`gh auth login --web --hostname github.com; echo; echo "Press enter to close"; read _`)
-		return flashMsg{text: "Login flow opened in terminal"}
+		}, probeAuthCmd())
+	default:
+		return m, tea.Sequence(func() tea.Msg {
+			terminal.OpenCommandInTerminal(`gh auth login --web --hostname github.com; echo; echo "Press enter to close"; read _`)
+			return flashMsg{text: "Login flow opened in terminal"}
+		}, probeAuthCmd())
 	}
 }
 
@@ -391,15 +426,19 @@ func (m settingsModel) renderHealth(d *AppletData) string {
 
 func (m settingsModel) renderAuth(d *AppletData) string {
 	_ = d
-	runner := codespace.DefaultGHRunner{}
-	authed := codespace.EnsureGHAuth(runner) == nil
-	state := stateBad.Render("not authenticated")
-	if authed {
-		state = stateOK.Render("authenticated")
-	}
 	header := m.sectionHeader("AUTH", secAuth)
-	hint := "enter to log " + map[bool]string{true: "out", false: "in"}[authed]
-	return fmt.Sprintf("%s\n  GitHub: %s  %s", header, state, dimStyle.Render(hint))
+	// Rendered purely from the cached async probe — View must never exec
+	// gh (it used to, blocking the whole TUI on every repaint).
+	switch m.authState {
+	case authYes:
+		return fmt.Sprintf("%s\n  GitHub: %s  %s", header,
+			stateOK.Render("authenticated"), dimStyle.Render("enter to log out"))
+	case authNo:
+		return fmt.Sprintf("%s\n  GitHub: %s  %s", header,
+			stateBad.Render("not authenticated"), dimStyle.Render("enter to log in"))
+	default:
+		return fmt.Sprintf("%s\n  GitHub: %s", header, dimStyle.Render("checking…"))
+	}
 }
 
 func (m settingsModel) renderEditor(_ *AppletData) string {

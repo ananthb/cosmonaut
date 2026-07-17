@@ -27,6 +27,7 @@ const (
 // option toggles and the inline delete confirmation; ports are read from
 // the shared cache.
 type detailModel struct {
+	data      *AppletData
 	workspace provider.Workspace
 
 	focus         detailFocus
@@ -87,11 +88,31 @@ func sshOptionsSharedConfNote(providerName string) string {
 	return ""
 }
 
-func newDetailModel(_ *AppletData, ws provider.Workspace) detailModel {
-	return detailModel{workspace: ws}
+func newDetailModel(d *AppletData, ws provider.Workspace) detailModel {
+	return detailModel{data: d, workspace: ws}
 }
 
-func (m detailModel) Init() tea.Cmd { return nil }
+// Init kicks off the ports fetch for GitHub codespaces as a proper command
+// whose completion message repaints the view. Fetching from View (the old
+// approach) both stacked subprocesses per repaint and never repainted when
+// the fetch landed — "loading..." stuck until the next keypress.
+func (m detailModel) Init() tea.Cmd {
+	if m.workspace.Provider != provider.NameGitHub || m.data == nil {
+		return nil
+	}
+	name := m.workspace.Name
+	d := m.data
+	return func() tea.Msg {
+		done := make(chan struct{})
+		if _, started := d.ensurePortsCache(name, func() { close(done) }); !started {
+			// Cached already, or another fetch is in flight and owns the
+			// repaint; nothing to wait on.
+			return nil
+		}
+		<-done
+		return reloadMsg{}
+	}
+}
 
 func (m detailModel) update(msg tea.Msg, d *AppletData) (detailModel, tea.Cmd) {
 	switch msg := msg.(type) {

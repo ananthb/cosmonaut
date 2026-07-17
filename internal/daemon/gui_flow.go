@@ -61,43 +61,57 @@ func (d *Daemon) showGUI(args ...string) {
 
 		if workspaceName != "" && providerName != "" {
 			target, resolvedName := d.resolveGUITarget(targetArg)
+			// Show the window BEFORE any step that can fail or block:
+			// showFlowError against a never-shown window renders an
+			// invisible dialog and leaks the hidden window, and
+			// ResolveWorkspace execs the provider CLI, which must not run
+			// on the Fyne main thread.
+			progress := newProgressScreen("Resolving workspace...")
+			uw.win.SetContent(progress.canvas)
+			uw.win.Show()
+
 			manager, err := d.managerForProvider(providerName)
 			if err != nil {
+				progress.stop()
 				showFlowError(uw.win, err)
 				return
 			}
-			ws, err := manager.ResolveWorkspace(workspaceName)
-			if err != nil {
-				showFlowError(uw.win, err)
-				return
-			}
-			uw.win.Show()
-			if detailOnly {
-				uw.showDetailFor(*ws)
-				// --port-forward and --delete are mutually exclusive
-				// follow-ups; either fires its dialog against uw.win
-				// after the detail render, and stacking both would
-				// leave one buried behind the other.
-				switch {
-				case portForward:
-					wsCopy := *ws
-					uw.showAdHocPortForwardDialog(wsCopy.Provider, wsCopy.Name, func() {
-						uw.showDetailFor(wsCopy)
-					})
-				case deleteFlow:
-					wsCopy := *ws
-					d.confirmAndDeleteWorkspace(uw.win, wsCopy.Provider, wsCopy.Name, func() {
-						uw.tree.Refresh()
-						if wsCopy.Provider == provider.NameCoder {
-							uw.showCoderSummary()
-						} else {
-							uw.showCosmoWelcome()
+			go func() {
+				ws, err := manager.ResolveWorkspace(workspaceName)
+				fyne.Do(func() {
+					progress.stop()
+					if err != nil {
+						showFlowError(uw.win, err)
+						return
+					}
+					if detailOnly {
+						uw.showDetailFor(*ws)
+						// --port-forward and --delete are mutually exclusive
+						// follow-ups; either fires its dialog against uw.win
+						// after the detail render, and stacking both would
+						// leave one buried behind the other.
+						switch {
+						case portForward:
+							wsCopy := *ws
+							uw.showAdHocPortForwardDialog(wsCopy.Provider, wsCopy.Name, func() {
+								uw.showDetailFor(wsCopy)
+							})
+						case deleteFlow:
+							wsCopy := *ws
+							d.confirmAndDeleteWorkspace(uw.win, wsCopy.Provider, wsCopy.Name, func() {
+								uw.tree.Refresh()
+								if wsCopy.Provider == provider.NameCoder {
+									uw.showCoderSummary()
+								} else {
+									uw.showCosmoWelcome()
+								}
+							})
 						}
-					})
-				}
-				return
-			}
-			d.runLaunchFlow(uw.win, target, resolvedName, ws)
+						return
+					}
+					d.runLaunchFlow(uw.win, target, resolvedName, ws)
+				})
+			}()
 		} else if targetArg != "" {
 			target, _ := d.resolveGUITarget(targetArg)
 			if target.Repository != "" {

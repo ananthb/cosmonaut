@@ -112,7 +112,12 @@ func (d *Daemon) buildTrayMenu() *fyne.Menu {
 
 func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 	all := d.Codespaces()
-	if len(all) == 0 && !provider.IsGitHubAvailable() {
+	// Use the poller's cached ProviderStatus, never a live
+	// provider.IsGitHubAvailable() probe: this runs inside fyne.Do on
+	// every tray rebuild, and the probe execs `gh auth status` with a 5s
+	// timeout — an offline laptop froze the whole UI for seconds per
+	// rebuild.
+	if len(all) == 0 && !d.providerUsable(provider.NameGitHub) {
 		return nil
 	}
 
@@ -190,7 +195,8 @@ func githubStatusMessage(status ProviderStatus) string {
 
 func (d *Daemon) coderWorkspaceMenu() *fyne.MenuItem {
 	workspaces := filterWorkspacesByProvider(d.Workspaces(), provider.NameCoder)
-	if len(workspaces) == 0 && !provider.IsCoderAvailable() {
+	// Cached status only — see githubCodespacesMenu for why no live probe.
+	if len(workspaces) == 0 && !d.providerUsable(provider.NameCoder) {
 		return nil
 	}
 

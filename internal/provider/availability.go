@@ -35,3 +35,17 @@ func IsCoderAvailable() bool {
 	defer cancel()
 	return exec.CommandContext(ctx, "coder", "whoami").Run() == nil
 }
+
+// HasGitHubCLI reports whether `gh` is on PATH. Unlike IsGitHubAvailable
+// it never execs anything, so it's safe on UI threads; auth problems
+// surface later with a proper error.
+func HasGitHubCLI() bool {
+	_, err := exec.LookPath("gh")
+	return err == nil
+}
+
+// HasCoderCLI reports whether `coder` is on PATH without execing it.
+func HasCoderCLI() bool {
+	_, err := exec.LookPath("coder")
+	return err == nil
+}

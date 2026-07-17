@@ -309,37 +309,15 @@ func (uw *unifiedWindow) buildCosmoSidebar() fyne.CanvasObject {
 	return container.NewBorder(top, bottom, nil, nil, uw.tree)
 }
 
-// buildAccountFooter shows the signed-in GitHub handle with a small status dot.
+// buildAccountFooter shows the signed-in GitHub handle with a small status
+// dot. The `gh auth status` probe is a network round-trip, and this builder
+// runs on the Fyne main thread (window open, every theme change) — so it
+// renders a placeholder immediately and fills the result in from a
+// goroutine via fyne.Do.
 func (uw *unifiedWindow) buildAccountFooter() fyne.CanvasObject {
-	// Try to get the GitHub username.
-	ghUser := "not authenticated"
-	authed := false
-	if out, err := uw.daemon.Runner.Run([]string{"auth", "status", "--hostname", "github.com"}); err == nil {
-		// Parse "Logged in to github.com account <user>" from output.
-		for _, line := range strings.Split(out, "\n") {
-			if idx := strings.Index(line, "account "); idx >= 0 {
-				parts := strings.Fields(line[idx:])
-				if len(parts) >= 2 {
-					ghUser = parts[1]
-					authed = true
-				}
-				break
-			}
-		}
-		if !authed {
-			ghUser = "authenticated"
-			authed = true
-		}
-	}
+	dot := stateDot("Starting")
 
-	dot := stateDot(func() string {
-		if authed {
-			return "Available"
-		}
-		return "Stopped"
-	}())
-
-	handle := canvas.NewText(ghUser, theme.Color(theme.ColorNameForeground))
+	handle := canvas.NewText("checking…", theme.Color(theme.ColorNameForeground))
 	handle.TextSize = 12
 	handle.TextStyle = fyne.TextStyle{Bold: true}
 
@@ -353,9 +331,44 @@ func (uw *unifiedWindow) buildAccountFooter() fyne.CanvasObject {
 	settingsBtn.Importance = widget.LowImportance
 
 	info := container.NewVBox(handle, sub)
-	return container.NewPadded(
+	footer := container.NewPadded(
 		container.NewBorder(nil, nil, container.NewHBox(dot, info), settingsBtn),
 	)
+
+	runner := uw.daemon.Runner
+	go func() {
+		ghUser := "not authenticated"
+		authed := false
+		if out, err := runner.Run([]string{"auth", "status", "--hostname", "github.com"}); err == nil {
+			// Parse "Logged in to github.com account <user>" from output.
+			for _, line := range strings.Split(out, "\n") {
+				if idx := strings.Index(line, "account "); idx >= 0 {
+					parts := strings.Fields(line[idx:])
+					if len(parts) >= 2 {
+						ghUser = parts[1]
+						authed = true
+					}
+					break
+				}
+			}
+			if !authed {
+				ghUser = "authenticated"
+				authed = true
+			}
+		}
+		fyne.Do(func() {
+			handle.Text = ghUser
+			handle.Refresh()
+			state := "Stopped"
+			if authed {
+				state = "Available"
+			}
+			updateStateDot(dot, state)
+			footer.Refresh()
+		})
+	}()
+
+	return footer
 }
 
 // thinDivider returns a 1px canvas line using the theme border color.
@@ -1245,8 +1258,20 @@ func (uw *unifiedWindow) showCosmoCreateNewCoder() {
 }
 
 func (uw *unifiedWindow) showCosmoCreateNewCoderFromTemplates(title *canvas.Text) {
+	// ListTemplates execs the coder CLI; this runs from tree OnSelected on
+	// the Fyne main thread, so show a loading screen and fetch async.
+	loading := widget.NewLabel("Loading Coder templates…")
+	loading.Wrapping = fyne.TextWrapWord
+	uw.setContent(container.NewPadded(container.NewVBox(title, widget.NewSeparator(), loading)))
+
 	manager := provider.NewCoderManager(uw.daemon.Cfg)
-	templates, err := manager.ListTemplates()
+	go func() {
+		templates, err := manager.ListTemplates()
+		fyne.Do(func() { uw.renderCosmoCoderTemplateForm(title, templates, err) })
+	}()
+}
+
+func (uw *unifiedWindow) renderCosmoCoderTemplateForm(title *canvas.Text, templates []provider.CoderTemplate, err error) {
 	if err != nil {
 		msg := widget.NewLabel(fmt.Sprintf("Could not load Coder templates automatically: %v", err))
 		msg.Wrapping = fyne.TextWrapWord
