@@ -11,6 +11,8 @@ import (
 	"sync"
 
 	"github.com/tailscale/hujson"
+
+	"github.com/linuskendall/cosmonaut/internal/fileutil"
 )
 
 type Config struct {
@@ -417,18 +419,21 @@ func LoadConfig(path string) (*Config, error) {
 // with 4-space indentation for easy hand-editing.
 //
 // Takes the write lock for the duration of the marshal so a concurrent
-// writer can't mutate the struct mid-serialization.
+// writer can't mutate the struct mid-serialization. A nil config is an
+// error: marshaling nil would write the literal `null` over the user's
+// config file.
 func SaveConfig(path string, cfg *Config) error {
-	if cfg != nil {
-		cfg.mu.Lock()
-		defer cfg.mu.Unlock()
+	if cfg == nil {
+		return fmt.Errorf("refusing to save nil config to %s", path)
 	}
+	cfg.mu.Lock()
+	defer cfg.mu.Unlock()
 	data, err := json.MarshalIndent(cfg, "", "    ")
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+	return fileutil.WriteFileAtomic(path, data, 0o644)
 }
 
 func (c *Config) EffectiveWorkspaceProvider() string {

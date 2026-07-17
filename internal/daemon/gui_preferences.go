@@ -379,8 +379,13 @@ func (d *Daemon) buildTargetSection() fyne.CanvasObject {
 	return container.NewVBox(heading, form)
 }
 
-// persistConfig saves config and rebuilds the tray menu.
+// persistConfig saves config and rebuilds the tray menu. A nil Cfg is a
+// no-op: SaveConfig would refuse it anyway (writing `null` over the user's
+// config file is never right), so don't even log it as an error here.
 func (d *Daemon) persistConfig() {
+	if d.Cfg == nil {
+		return
+	}
 	if err := config.SaveConfig(d.ConfigPath, d.Cfg); err != nil {
 		log.Printf("error saving config: %v", err)
 	}

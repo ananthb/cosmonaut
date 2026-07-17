@@ -10,6 +10,7 @@ import (
 
 	"github.com/adrg/xdg"
 
+	"github.com/linuskendall/cosmonaut/internal/fileutil"
 	"github.com/linuskendall/cosmonaut/internal/sshconfig"
 )
 
@@ -118,7 +119,7 @@ func migrateSSHInclude(sshConfigPath string) {
 		content = strings.Replace(content, oldSSHIncl, newSSHIncl, 1)
 	}
 
-	if err := os.WriteFile(sshConfigPath, []byte(content), 0o644); err != nil {
+	if err := fileutil.WriteFileAtomic(sshConfigPath, []byte(content), 0o600); err != nil {
 		log.Printf("migrate: update %s: %v", sshConfigPath, err)
 	} else {
 		log.Printf("migrate: updated SSH include in %s", sshConfigPath)

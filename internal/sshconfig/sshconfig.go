@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/linuskendall/cosmonaut/internal/fileutil"
 )
 
 const (
@@ -139,7 +141,9 @@ func EnsureConfigIncludesGenerated(mainConfigPath string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(mainConfigPath, []byte(updated), 0o644)
+	// Atomic write: a crash mid-write of ~/.ssh/config would otherwise
+	// lock the user out of every SSH host they use.
+	return fileutil.WriteFileAtomic(mainConfigPath, []byte(updated), 0o600)
 }
 
 func EnsureMainConfigIncludesGenerated(mainConfigPath string) error {
@@ -181,11 +185,18 @@ func ScopeHostStarBlocks(mainConfigPath string) (bool, error) {
 	}
 	backup := mainConfigPath + MainConfigBackupSuffix
 	if _, err := os.Stat(backup); os.IsNotExist(err) {
-		if err := os.WriteFile(backup, data, 0o644); err != nil {
+		// Match the original file's mode: ~/.ssh/config is commonly 0600
+		// and the backup holds the same content, so a 0644 copy would
+		// quietly loosen its permissions.
+		mode := os.FileMode(0o600)
+		if st, err := os.Stat(mainConfigPath); err == nil {
+			mode = st.Mode().Perm()
+		}
+		if err := os.WriteFile(backup, data, mode); err != nil {
 			return false, fmt.Errorf("backup %s: %w", backup, err)
 		}
 	}
-	return true, os.WriteFile(mainConfigPath, []byte(updated), 0o644)
+	return true, fileutil.WriteFileAtomic(mainConfigPath, []byte(updated), 0o600)
 }
 
 // ReadExistingAlias reads the SSH alias from an existing codespace config file.
@@ -394,7 +405,7 @@ func WriteCodespaceConfig(includeDir, codespaceName, content string, opts Manage
 		return err
 	}
 	path := filepath.Join(includeDir, codespaceName+".conf")
-	return os.WriteFile(path, []byte(content), 0o644)
+	return fileutil.WriteFileAtomic(path, []byte(content), 0o644)
 }
 
 func WriteWorkspaceConfig(includeDir, provider, workspaceName, content string, opts ManagedExtrasOptions) error {
@@ -406,7 +417,7 @@ func WriteWorkspaceConfig(includeDir, provider, workspaceName, content string, o
 		return err
 	}
 	path := SSHPaths{IncludeDir: includeDir}.WorkspaceConfigPath(provider, workspaceName)
-	return os.WriteFile(path, []byte(content), 0o644)
+	return fileutil.WriteFileAtomic(path, []byte(content), 0o644)
 }
 
 func EnsureWorkspaceConfig(paths SSHPaths, provider, workspaceName, content string, opts ManagedExtrasOptions) error {
@@ -437,7 +448,7 @@ func RefreshManagedExtras(path string, opts ManagedExtrasOptions) (bool, error) 
 	if updated == string(data) {
 		return false, nil
 	}
-	return true, os.WriteFile(path, []byte(updated), 0o644)
+	return true, fileutil.WriteFileAtomic(path, []byte(updated), 0o644)
 }
 
 // RefreshAllManagedExtras walks includeDir and refreshes the managed block

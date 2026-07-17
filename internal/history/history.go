@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/adrg/xdg"
+
+	"github.com/linuskendall/cosmonaut/internal/fileutil"
 )
 
 // Entry records a single repo usage.
@@ -60,7 +62,7 @@ func (h *History) SaveTo(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	return fileutil.WriteFileAtomic(path, append(data, '\n'), 0o644)
 }
 
 // Touch records a repository as just used.
