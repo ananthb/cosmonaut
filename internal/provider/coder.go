@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -318,7 +319,12 @@ func (m *CoderManager) runCtx(ctx context.Context, args ...string) (string, erro
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
+		// context.Cause instead of ctx.Err(): identical for real
+		// WithTimeout contexts (their cause IS DeadlineExceeded), but it
+		// also honors WithCancelCause(ctx); cancel(DeadlineExceeded),
+		// which the tests use to fire the "deadline" at a deterministic
+		// point instead of racing a wall-clock timer.
+		if errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
 			tail := strings.TrimSpace(stderr.String())
 			if len(tail) > 200 {
 				// Slice the last 200 bytes, then advance to a UTF-8 rune

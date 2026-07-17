@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,39 +12,38 @@ import (
 	"github.com/linuskendall/cosmonaut/internal/config"
 )
 
-// writeFakeCoder creates a script named "coder" in a temp dir that emits the
-// given stderr text and then sleeps for sleepSeconds. It returns the absolute
-// directory containing the script.
-func writeFakeCoder(t *testing.T, stderr string, sleepSeconds int) string {
+// writeFakeCoder creates a script named "coder" in a temp dir that emits
+// the given stderr text, signals readiness by creating a sentinel file,
+// and then sleeps until it is killed. It returns the script's directory
+// and the sentinel path.
+//
+// The sentinel is what makes the timeout tests deterministic: the test
+// waits for it before delivering the "deadline", so the stderr bytes are
+// guaranteed to be in the pipe. The old fixed 5s-timeout scheme raced sh
+// fork latency against a wall clock and flaked under heavy parallel test
+// load (and burned 5 real seconds per test even when it won).
+func writeFakeCoder(t *testing.T, stderr string) (dir, readyPath string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake coder script requires a POSIX shell")
 	}
-	dir := t.TempDir()
+	dir = t.TempDir()
+	readyPath = filepath.Join(dir, "ready")
 	script := "#!/bin/sh\n" +
 		"printf '%s' " + shellQuote(stderr) + " 1>&2\n" +
-		"sleep " + strconv.Itoa(sleepSeconds) + "\n"
+		": > " + shellQuote(readyPath) + "\n" +
+		"sleep 600\n"
 	path := filepath.Join(dir, "coder")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake coder: %v", err)
 	}
-	return dir
+	return dir, readyPath
 }
 
 func shellQuote(s string) string {
 	// Wrap in single quotes and escape any embedded single quotes.
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
-
-// runCtxTimeout is generous enough that the fake shell has time to fork,
-// write to stderr, and start sleeping on slow CI runners before the deadline
-// fires. Under heavy parallel test load (go test ./... at full
-// concurrency), sh fork latency can exceed 1s; the value is set high
-// enough that printf reliably reaches the stderr pipe before the
-// deadline cancels the context. The fake script's sleep duration must
-// also exceed this so the context (not the script's normal exit) wins
-// the race.
-const runCtxTimeout = 5 * time.Second
 
 // pathWithFakeCoder returns a PATH value that resolves "coder" to the fake
 // script in dir while preserving access to system utilities like /bin/sleep
@@ -54,13 +52,36 @@ func pathWithFakeCoder(dir string) string {
 	return dir + string(os.PathListSeparator) + os.Getenv("PATH")
 }
 
+// timeoutCtxOnReady returns a context whose "deadline" fires as soon as
+// readyPath exists — i.e. deterministically after the fake coder has
+// written its stderr. runCtx treats it exactly like an expired
+// context.WithTimeout because the cancel cause is DeadlineExceeded.
+func timeoutCtxOnReady(t *testing.T, readyPath string) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(nil) })
+	go func() {
+		// Generous backstop: if the script never signals (fork failure),
+		// fire anyway so the test fails with a useful message instead of
+		// hanging.
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(readyPath); err == nil {
+				break
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		cancel(context.DeadlineExceeded)
+	}()
+	return ctx
+}
+
 func TestRunCtxTimeoutIncludesStderrTail(t *testing.T) {
-	dir := writeFakeCoder(t, "boom: backend unreachable\n", 30)
+	dir, ready := writeFakeCoder(t, "boom: backend unreachable\n")
 	t.Setenv("PATH", pathWithFakeCoder(dir))
 
 	m := &CoderManager{}
-	ctx, cancel := context.WithTimeout(context.Background(), runCtxTimeout)
-	defer cancel()
+	ctx := timeoutCtxOnReady(t, ready)
 
 	_, err := m.runCtx(ctx, "delete", "--yes", "--", "ws")
 	if err == nil {
@@ -76,12 +97,11 @@ func TestRunCtxTimeoutIncludesStderrTail(t *testing.T) {
 }
 
 func TestRunCtxTimeoutWithoutStderrOmitsTail(t *testing.T) {
-	dir := writeFakeCoder(t, "", 30)
+	dir, ready := writeFakeCoder(t, "")
 	t.Setenv("PATH", pathWithFakeCoder(dir))
 
 	m := &CoderManager{}
-	ctx, cancel := context.WithTimeout(context.Background(), runCtxTimeout)
-	defer cancel()
+	ctx := timeoutCtxOnReady(t, ready)
 
 	_, err := m.runCtx(ctx, "delete", "--yes", "--", "ws")
 	if err == nil {
@@ -99,12 +119,11 @@ func TestRunCtxTimeoutWithoutStderrOmitsTail(t *testing.T) {
 
 func TestRunCtxTimeoutTrimsLongStderr(t *testing.T) {
 	long := strings.Repeat("x", 500) + "TAIL_MARKER"
-	dir := writeFakeCoder(t, long, 30)
+	dir, ready := writeFakeCoder(t, long)
 	t.Setenv("PATH", pathWithFakeCoder(dir))
 
 	m := &CoderManager{}
-	ctx, cancel := context.WithTimeout(context.Background(), runCtxTimeout)
-	defer cancel()
+	ctx := timeoutCtxOnReady(t, ready)
 
 	_, err := m.runCtx(ctx, "delete", "--yes", "--", "ws")
 	if err == nil {
