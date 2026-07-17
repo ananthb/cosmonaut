@@ -49,7 +49,11 @@ func launchCmd(configPath *string) *cobra.Command {
 				v := controlMaster
 				cmOverride = &v
 			}
-			return run(*configPath, targetName, codespaceName, editorFlag, cmOverride)
+			// noPicker: launch's documented contract is to error instead
+			// of opening the TUI picker, including on ambiguous or zero
+			// workspace matches (run() used to open the applet anyway
+			// whenever stdin was a TTY).
+			return run(*configPath, targetName, codespaceName, editorFlag, cmOverride, true)
 		},
 	}
 	cmd.Flags().StringVar(&codespaceName, "codespace", "", "launch this codespace, skipping selection")

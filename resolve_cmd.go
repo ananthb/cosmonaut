@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,7 +80,12 @@ func runResolve(configPath, targetName, codespaceName, _ string, controlMasterOv
 	if err != nil {
 		return err
 	}
-	cfg, _ := config.LoadConfig(absConfigPath)
+	// Malformed config: fail loudly (same policy as shell/run); only a
+	// missing file falls back to the zero config.
+	cfg, err := config.LoadConfig(absConfigPath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("loading config: %w", err)
+	}
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
@@ -99,7 +106,11 @@ func runResolve(configPath, targetName, codespaceName, _ string, controlMasterOv
 		return err
 	}
 	resolvedTargetName := targetName
-	if resolvedTargetName == "" && cfg != nil {
+	if resolvedTargetName == "" && codespaceName == "" && cfg != nil {
+		// Only claim defaultTarget when it actually participated:
+		// resolveShellTarget deliberately returns an empty target for
+		// codespace-only invocations, so reporting defaultTarget there
+		// mis-attributed settings that played no part in resolution.
 		resolvedTargetName = cfg.DefaultTarget
 	}
 

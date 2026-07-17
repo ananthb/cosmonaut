@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -37,7 +39,12 @@ func runDoctor(configPath string, applyFixes bool) error {
 	if err != nil {
 		return err
 	}
-	cfg, _ := config.LoadConfig(absConfigPath)
+	// Malformed config: fail loudly (same policy as shell/run); only a
+	// missing file falls back to the zero config.
+	cfg, err := config.LoadConfig(absConfigPath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("loading config: %w", err)
+	}
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
@@ -107,5 +114,8 @@ func runDoctor(configPath string, applyFixes bool) error {
 		return nil
 	}
 	printf("\n%d check(s) need attention.\n", failures)
-	return nil
+	// Non-zero exit so scripts/CI can gate on `cosmonaut doctor`. The
+	// message above already explains everything; cobra's SilenceErrors
+	// setup means this just sets the exit code.
+	return fmt.Errorf("%d doctor check(s) failing", failures)
 }

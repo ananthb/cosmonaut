@@ -250,7 +250,14 @@ func FilterByRepo(codespaces []Codespace, repo string) []Codespace {
 	return result
 }
 
-var codespaceNameRe = regexp.MustCompile(`[A-Za-z0-9-]+-[A-Za-z0-9]{6,}`)
+// codespaceNameRe matches a real GitHub codespace name: a multi-word
+// petname plus a trailing alphanumeric hash (e.g.
+// "expert-spoon-vwqr5wq4x73xjpj"). The old pattern
+// ([A-Za-z0-9-]+-[A-Za-z0-9]{6,}) matched ordinary hyphenated words gh
+// echoes in its prompts — a branch like "fix-timeout-handling" matched
+// before the actual name, and the follow-up `codespace view` targeted the
+// wrong string.
+var codespaceNameRe = regexp.MustCompile(`\b[a-z0-9]+(?:-[a-z0-9]+)+-[a-z0-9]{10,}\b`)
 
 // CreateCodespace creates a new codespace by POSTing directly to the GitHub REST
 // API (`POST /repos/{owner}/{repo}/codespaces`). This bypasses the interactive
@@ -369,10 +376,13 @@ func CreateCodespaceInteractive(runner GHRunner, target config.Target) (*Codespa
 		return nil, err
 	}
 
-	match := codespaceNameRe.FindString(combined)
-	if match == "" {
+	// Take the LAST match: gh prints the created codespace name at the end
+	// of its output, after prompts that may echo repo/branch strings.
+	matches := codespaceNameRe.FindAllString(combined, -1)
+	if len(matches) == 0 {
 		return nil, fmt.Errorf("codespace created but name could not be determined from gh output:\n%s", strings.TrimSpace(combined))
 	}
+	match := matches[len(matches)-1]
 
 	out, err := runner.Run([]string{
 		"codespace", "view",

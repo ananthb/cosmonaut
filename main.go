@@ -11,7 +11,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -90,17 +92,19 @@ and ` + "`doctor`" + ` for environment checks.`,
 				v := controlMaster
 				cmOverride = &v
 			}
-			return run(configPath, targetName, codespaceName, editorFlag, cmOverride)
+			return run(configPath, targetName, codespaceName, editorFlag, cmOverride, false)
 		},
 	}
 
 	cmd.PersistentFlags().StringVar(&configPath, "config", defaultConfigPath, "config file path")
 	cmd.Flags().StringVar(&codespaceName, "codespace", "", "launch this codespace, skipping selection")
-	cmd.Flags().StringVar(&editorFlag, "editor", "", "editor binary to launch (empty = zed, with built-in settings.json integration)")
+	cmd.Flags().StringVar(&editorFlag, "editor", "", "editor binary to launch (empty = cfg.editor, defaulting to zed with built-in settings.json integration)")
 	cmd.Flags().BoolVar(&controlMaster, "control-master", true, "use SSH ControlMaster multiplexing for instant reconnects")
 
 	_ = cmd.RegisterFlagCompletionFunc("config", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return nil, cobra.ShellCompDirectiveFilterFileExt
+		// With FilterFileExt the returned slice IS the extension list; nil
+		// used to filter everything out.
+		return []string{"json"}, cobra.ShellCompDirectiveFilterFileExt
 	})
 
 	cmd.AddCommand(appletCmd(&configPath))
@@ -138,13 +142,23 @@ func completeTargets(configPath *string) func(*cobra.Command, []string, string) 
 	}
 }
 
-func run(configPath, targetName, codespaceName, editorFlag string, controlMasterOverride *bool) error {
+// run is the shared core of `cosmonaut [target]` and `cosmonaut launch`.
+// noPicker enforces launch's contract: every branch that would open the
+// interactive applet errors instead.
+func run(configPath, targetName, codespaceName, editorFlag string, controlMasterOverride *bool, noPicker bool) error {
 	absConfigPath, err := filepath.Abs(configPath)
 	if err != nil {
 		return err
 	}
 
-	cfg, _ := config.LoadConfig(absConfigPath)
+	// A malformed config is a loud error, not silently-empty defaults
+	// (which surfaced as a baffling "unknown target" for every target);
+	// only a genuinely missing file falls back to the zero config. Same
+	// policy as `cosmonaut shell`.
+	cfg, err := config.LoadConfig(absConfigPath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("loading config: %w", err)
+	}
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
@@ -157,7 +171,7 @@ func run(configPath, targetName, codespaceName, editorFlag string, controlMaster
 	// or --codespace for a one-shot launch.
 	if interactive && targetName == "" && codespaceName == "" {
 		if editorFlag != "" {
-			cfg.Editor = editorFlag
+			cfg.SetEditor(editorFlag)
 		}
 		data := tui.NewAppletData(cfg, absConfigPath)
 		return tui.RunApplet(data)
@@ -195,29 +209,34 @@ func run(configPath, targetName, codespaceName, editorFlag string, controlMaster
 		// name rather than a config target (used by the tray for history entries).
 		if strings.Contains(targetName, "/") {
 			target, resolvedTargetName = targetForRepo(cfg, targetName, manager.Name())
-		} else if cfg == nil {
-			return fmt.Errorf("target %q specified but no config file found at %s", targetName, absConfigPath)
 		} else if t, ok := cfg.Targets[targetName]; ok {
 			target = t
 			resolvedTargetName = targetName
 		} else {
 			return fmt.Errorf("unknown target %q in %s", targetName, absConfigPath)
 		}
-	case cfg != nil && cfg.DefaultTarget != "":
+	case codespaceName != "":
+		// --codespace alone launches that workspace with settings guessed
+		// from the workspace itself, mirroring `cosmonaut shell
+		// --codespace`. Deliberately does NOT pull in defaultTarget — the
+		// named workspace may have nothing to do with it. target stays
+		// zero; the flag used to be silently dropped (interactive) or
+		// wrongly rejected here.
+	case cfg.DefaultTarget != "":
 		t, ok := cfg.Targets[cfg.DefaultTarget]
 		if !ok {
 			return fmt.Errorf("default target %q not found in %s", cfg.DefaultTarget, absConfigPath)
 		}
 		target = t
 		resolvedTargetName = cfg.DefaultTarget
-	case interactive:
+	case interactive && !noPicker:
 		// No target, no defaultTarget, but interactive — hand off to the
 		// TUI applet so the user can pick (or create). This is the case
 		// where the gate above didn't fire because --editor was set; we
 		// honor --editor by overriding cfg.Editor for the applet's
 		// session before launching it.
 		if editorFlag != "" {
-			cfg.Editor = editorFlag
+			cfg.SetEditor(editorFlag)
 		}
 		data := tui.NewAppletData(cfg, absConfigPath)
 		return tui.RunApplet(data)
@@ -227,9 +246,6 @@ func run(configPath, targetName, codespaceName, editorFlag string, controlMaster
 
 	// Direct codespace launch: bypass all selection.
 	if codespaceName != "" {
-		if target.Repository == "" && target.ExplicitWorkspaceName(manager.Name()) == "" {
-			return fmt.Errorf("--codespace requires a target or repo argument to resolve workspace settings")
-		}
 		selected, err = manager.ResolveWorkspace(codespaceName)
 		if err != nil {
 			return fmt.Errorf("looking up workspace %q: %w", codespaceName, err)
@@ -253,28 +269,29 @@ func run(configPath, targetName, codespaceName, editorFlag string, controlMaster
 			return err
 		}
 
+		pickerOK := interactive && !noPicker
 		switch {
 		case len(workspaces) == 1:
 			selected = &workspaces[0]
-		case len(workspaces) > 1 && interactive:
+		case len(workspaces) > 1 && pickerOK:
 			// Multiple matches: open the applet narrowed to the target's
 			// repo so the user can pick.
 			if editorFlag != "" {
-				cfg.Editor = editorFlag
+				cfg.SetEditor(editorFlag)
 			}
 			data := tui.NewAppletData(cfg, absConfigPath)
 			return tui.RunApplet(data, tui.AppletInitial{Filter: target.Repository})
-		case len(workspaces) > 1 && !interactive:
+		case len(workspaces) > 1:
 			names := make([]string, len(workspaces))
 			for i, w := range workspaces {
 				names[i] = w.Name
 			}
 			return fmt.Errorf("ambiguous workspace match for target %q: %s (pass --codespace <name>)", targetName, strings.Join(names, ", "))
-		case len(workspaces) == 0 && interactive:
+		case len(workspaces) == 0 && pickerOK:
 			// No match: open the applet on the Create view with the repo
 			// pre-filled so the user can confirm and create.
 			if editorFlag != "" {
-				cfg.Editor = editorFlag
+				cfg.SetEditor(editorFlag)
 			}
 			data := tui.NewAppletData(cfg, absConfigPath)
 			providerName := provider.NameGitHub
@@ -285,21 +302,26 @@ func run(configPath, targetName, codespaceName, editorFlag string, controlMaster
 				Provider:   providerName,
 				Repository: target.Repository,
 			}})
-		case len(workspaces) == 0 && !interactive:
+		case len(workspaces) == 0:
 			return fmt.Errorf("no workspace matches target %q; pre-create it (e.g. `gh codespace create`) or pass --codespace <name>", targetName)
 		}
 	}
 
-	hist := history.Load()
-	hist.Touch(target.Repository)
-	if err := hist.Save(); err != nil {
-		log.Printf("history: save: %v", err)
+	// Record recency for the picker's sort — but only for real repo
+	// launches: codespace-only launches of repo-less targets used to
+	// pollute history with empty-repository entries.
+	if target.Repository != "" {
+		hist := history.Load()
+		hist.Touch(target.Repository)
+		if err := hist.Save(); err != nil {
+			log.Printf("history: save: %v", err)
+		}
 	}
 
 	// Resolve the editor to use (CLI flag overrides config).
 	editorName := editorFlag
-	if editorName == "" && cfg != nil {
-		editorName = cfg.Editor
+	if editorName == "" {
+		editorName = cfg.GetEditor()
 	}
 	ed, err := editor.ForName(editorName)
 	if err != nil {

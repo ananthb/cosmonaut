@@ -3,6 +3,9 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -28,22 +31,25 @@ func appletCmd(configPath *string) *cobra.Command {
 		Short: "Run the menu bar applet (tray, hotkey, lifecycle)",
 		Long:  `Run the cosmonaut applet: tray icon, global hotkey, and workspace polling.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAppletStart(configPath)
+			return runAppletStart(configPath, cmd.Flags().Changed("config"))
 		},
 	}
 }
 
-func runAppletStart(configPath *string) error {
+func runAppletStart(configPath *string, configFlagSet bool) error {
 	// Migrate old codespace-zed paths to cosmonaut.
 	migrate.Run()
 
-	// If the user didn't explicitly set --config, prefer the XDG config path
-	// over the CWD-relative default (which makes no sense for a background applet).
+	// If the user didn't explicitly set --config, prefer the XDG config
+	// path over the CWD-relative default (which makes no sense for a
+	// background applet). "Explicitly" means the flag was actually passed
+	// — comparing values meant an explicit `--config cosmonaut.config.json`
+	// was silently overridden by the XDG file.
 	path := *configPath
-	if path == defaultConfigPath {
-		xdg := appletConfigPath()
-		if _, err := os.Stat(xdg); err == nil {
-			path = xdg
+	if !configFlagSet && path == defaultConfigPath {
+		xdgPath := appletConfigPath()
+		if _, err := os.Stat(xdgPath); err == nil {
+			path = xdgPath
 		}
 	}
 
@@ -52,7 +58,13 @@ func runAppletStart(configPath *string) error {
 		return err
 	}
 
-	cfg, _ := config.LoadConfig(absPath)
+	// Malformed config: refuse to start rather than silently running the
+	// applet with empty defaults (no targets, no hotkey). A missing file
+	// is fine — first-run applets have no config yet.
+	cfg, err := config.LoadConfig(absPath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("loading config: %w", err)
+	}
 	if cfg == nil {
 		cfg = &config.Config{Targets: map[string]config.Target{}}
 	}
