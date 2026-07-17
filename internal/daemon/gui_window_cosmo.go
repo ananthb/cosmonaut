@@ -216,7 +216,7 @@ func (uw *unifiedWindow) buildCosmoSidebar() fyne.CanvasObject {
 	title.TextStyle = fyne.TextStyle{Bold: true}
 	title.TextSize = 13
 
-	newBtn := widget.NewButtonWithIcon("", widget.NewIcon(nil).Resource, func() {
+	newBtn := widget.NewButtonWithIcon("", theme.ContentAddIcon(), func() {
 		uw.showCreateNewGeneric()
 	})
 	newBtn.Importance = widget.LowImportance
@@ -371,6 +371,14 @@ func (uw *unifiedWindow) buildAccountFooter() fyne.CanvasObject {
 	return footer
 }
 
+// stillOn reports whether the user is still looking at the view
+// identified by id. Async done-callbacks (port fetches, forward starts,
+// refreshes) gate their re-render on it so a slow operation can't snap
+// the window back to a view the user already left. Main thread only.
+func (uw *unifiedWindow) stillOn(id string) bool {
+	return uw.currentViewID == id
+}
+
 // thinDivider returns a 1px canvas line using the theme border color.
 func thinDivider() fyne.CanvasObject {
 	r := canvas.NewRectangle(theme.Color(theme.ColorNameSeparator))
@@ -389,6 +397,7 @@ func markIconResource() fyne.Resource {
 
 func (uw *unifiedWindow) showCosmoCodespaceDetail(csName, repo string) {
 	uw.currentView = func() { uw.showCosmoCodespaceDetail(csName, repo) }
+	uw.currentViewID = "codespace:" + csName
 	var cs *codespace.Codespace
 	for _, c := range uw.daemon.Codespaces() {
 		if c.Name == csName {
@@ -536,21 +545,21 @@ func (uw *unifiedWindow) showCosmoCodespaceDetail(csName, repo string) {
 
 func (uw *unifiedWindow) buildCodespacePortsSection(csName, repo string) fyne.CanvasObject {
 	title := caption("PORTS")
-	refreshBtn := widget.NewButton("Refresh", func() {
-		uw.daemon.refreshPortsAsync(csName, func() {
+	viewID := "codespace:" + csName
+	reshow := func() {
+		if uw.stillOn(viewID) {
 			uw.showCosmoCodespaceDetail(csName, repo)
-		})
+		}
+	}
+	refreshBtn := widget.NewButton("Refresh", func() {
+		uw.daemon.refreshPortsAsync(csName, reshow)
 	})
 	forwardBtn := widget.NewButton("Forward port...", func() {
-		uw.showAdHocPortForwardDialog(provider.NameGitHub, csName, func() {
-			uw.showCosmoCodespaceDetail(csName, repo)
-		})
+		uw.showAdHocPortForwardDialog(provider.NameGitHub, csName, reshow)
 	})
 	header := container.NewHBox(title, layout.NewSpacer(), forwardBtn, refreshBtn)
 
-	entry := uw.daemon.ensurePortsWithCallback(csName, func() {
-		uw.showCosmoCodespaceDetail(csName, repo)
-	})
+	entry := uw.daemon.ensurePortsWithCallback(csName, reshow)
 
 	var rows []fyne.CanvasObject
 	rows = append(rows, header)
@@ -604,7 +613,11 @@ func (uw *unifiedWindow) portRow(csName, repo string, port codespace.Port) fyne.
 				if err := uw.daemon.startLocalPortForward(csName, remotePort, localPort); err != nil {
 					uw.daemon.notify(err.Error())
 				}
-				fyne.Do(func() { uw.showCosmoCodespaceDetail(csName, repo) })
+				fyne.Do(func() {
+					if uw.stillOn("codespace:" + csName) {
+						uw.showCosmoCodespaceDetail(csName, repo)
+					}
+				})
 			}()
 		})
 	}
@@ -630,6 +643,7 @@ func stateColor(state string) color.Color {
 
 func (uw *unifiedWindow) showCosmoWelcome() {
 	uw.currentView = uw.showCosmoWelcome
+	uw.currentViewID = "welcome"
 	mark := canvas.NewImageFromResource(markIconResource())
 	mark.SetMinSize(fyne.NewSize(56, 56))
 	mark.FillMode = canvas.ImageFillContain
@@ -653,6 +667,7 @@ func (uw *unifiedWindow) showCosmoWelcome() {
 
 func (uw *unifiedWindow) showCosmoRepoSummary(repo string) {
 	uw.currentView = func() { uw.showCosmoRepoSummary(repo) }
+	uw.currentViewID = "repo:" + repo
 	all := filterWorkspacesByProvider(uw.daemon.Workspaces(), provider.NameGitHub)
 	repoCS := provider.FilterByRepo(all, repo)
 
@@ -679,6 +694,7 @@ func (uw *unifiedWindow) showCosmoRepoSummary(repo string) {
 
 func (uw *unifiedWindow) showCreateNewGeneric() {
 	uw.currentView = uw.showCreateNewGeneric
+	uw.currentViewID = "create-generic"
 	title := canvas.NewText("Create a new workspace", theme.Color(theme.ColorNameForeground))
 	title.TextSize = 18
 	title.TextStyle = fyne.TextStyle{Bold: true}
@@ -708,6 +724,7 @@ func (uw *unifiedWindow) showCreateNewGeneric() {
 
 func (uw *unifiedWindow) showCosmoCreateNew(repo string) {
 	uw.currentView = func() { uw.showCosmoCreateNew(repo) }
+	uw.currentViewID = "create:" + repo
 	target, resolvedName := guiTargetForRepo(uw.daemon.Cfg, repo)
 
 	title := canvas.NewText("Create a new codespace", theme.Color(theme.ColorNameForeground))
@@ -782,6 +799,7 @@ func (uw *unifiedWindow) showCosmoCreateNew(repo string) {
 
 func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
 	uw.currentView = func() { uw.showCoderWorkspaceDetail(ws) }
+	uw.currentViewID = "coder:" + ws.Name
 	target, resolvedName := guiTargetForCoderWorkspace(uw.daemon.Cfg, ws)
 
 	stateLbl := canvas.NewText(strings.ToUpper(ws.State), stateColor(ws.State))
@@ -833,6 +851,9 @@ func (uw *unifiedWindow) showCoderWorkspaceDetail(ws provider.Workspace) {
 			uw.loadRepos()
 			uw.applyFilter()
 			uw.tree.Refresh()
+			if !uw.stillOn("coder:" + ws.Name) {
+				return
+			}
 			for _, latest := range uw.daemon.Workspaces() {
 				if latest.Provider == provider.NameCoder && latest.Name == ws.Name {
 					uw.showCoderWorkspaceDetail(latest)
@@ -902,7 +923,9 @@ func (uw *unifiedWindow) buildCoderPortsSection(ws provider.Workspace, target co
 	title := caption("CONFIGURED PORT FORWARDS")
 	adHocBtn := widget.NewButton("Forward port...", func() {
 		uw.showAdHocPortForwardDialog(provider.NameCoder, ws.Name, func() {
-			uw.showCoderWorkspaceDetail(ws)
+			if uw.stillOn("coder:" + ws.Name) {
+				uw.showCoderWorkspaceDetail(ws)
+			}
 		})
 	})
 	addBtn := primaryButton("Add port forward", func() {
@@ -951,7 +974,11 @@ func (uw *unifiedWindow) coderPortRow(ws provider.Workspace, targetName string, 
 				if err := uw.daemon.startWorkspacePortForward(provider.NameCoder, ws.Name, protocol, remotePort, localPort); err != nil {
 					uw.daemon.notify(err.Error())
 				}
-				fyne.Do(func() { uw.showCoderWorkspaceDetail(ws) })
+				fyne.Do(func() {
+					if uw.stillOn("coder:" + ws.Name) {
+						uw.showCoderWorkspaceDetail(ws)
+					}
+				})
 			}()
 		})
 	}
@@ -1182,6 +1209,7 @@ func coderPortTargetName(cfg *config.Config, ws provider.Workspace, fallback str
 
 func (uw *unifiedWindow) showCosmoCreateNewCoder() {
 	uw.currentView = uw.showCosmoCreateNewCoder
+	uw.currentViewID = "create-coder"
 	title := canvas.NewText("Create a new Coder workspace", theme.Color(theme.ColorNameForeground))
 	title.TextSize = 18
 	title.TextStyle = fyne.TextStyle{Bold: true}
@@ -1373,12 +1401,10 @@ func fetchBranches(runner codespace.GHRunner, repo string) []string {
 	return branches
 }
 
-// githubURL builds a GitHub URL from path segments. No parsing needed since
-// we construct the URL struct directly.
 // formatTimeAgo turns an ISO 8601 timestamp into a relative time string.
 func formatTimeAgo(iso string) string {
 	if iso == "" {
-		return ":"
+		return "—"
 	}
 	t, err := time.Parse(time.RFC3339, iso)
 	if err != nil {

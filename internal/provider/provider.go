@@ -67,7 +67,8 @@ func MatchesTarget(ws *Workspace, t *config.Target) bool {
 	if ws == nil || t == nil {
 		return false
 	}
-	if t.Repository != "" && ws.Repository != "" && ws.Repository != t.Repository {
+	// Case-insensitive: GitHub repository names are.
+	if t.Repository != "" && ws.Repository != "" && !strings.EqualFold(ws.Repository, t.Repository) {
 		return false
 	}
 	explicitName := t.ExplicitWorkspaceName(ws.Provider)

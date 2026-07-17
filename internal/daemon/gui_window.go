@@ -31,6 +31,11 @@ type unifiedWindow struct {
 
 	// currentView re-invokes the active right-panel view on theme change.
 	currentView func()
+	// currentViewID identifies the rendered view so pending async
+	// done-callbacks can tell whether the user has navigated away (in
+	// which case re-rendering their old view would yank the UI back).
+	// Read and written on the Fyne main thread only.
+	currentViewID string
 }
 
 func (uw *unifiedWindow) loadRepos() {
@@ -276,6 +281,7 @@ func (uw *unifiedWindow) showWorkspaceDetail(providerName, name string) {
 
 func (uw *unifiedWindow) showCoderSummary() {
 	uw.currentView = uw.showCoderSummary
+	uw.currentViewID = "coder-summary"
 	all := filterWorkspacesByProvider(uw.daemon.Workspaces(), provider.NameCoder)
 	title := widget.NewLabel("Coder Workspaces")
 	title.TextStyle = fyne.TextStyle{Bold: true}

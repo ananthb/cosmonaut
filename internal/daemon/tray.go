@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"fmt"
+	"log"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -643,6 +645,15 @@ func (d *Daemon) applyTrayMenu() {
 }
 
 // openFile opens a file with the OS default handler.
+// openFile opens path with the platform's default handler. Errors are
+// surfaced in the log — a silent failure on Linux (where `open` doesn't
+// exist) made the "Edit config file" button appear dead.
 func openFile(path string) {
-	_ = exec.Command("open", path).Run()
+	opener := "open"
+	if runtime.GOOS == "linux" {
+		opener = "xdg-open"
+	}
+	if err := exec.Command(opener, path).Run(); err != nil {
+		log.Printf("open %s: %v", path, err)
+	}
 }

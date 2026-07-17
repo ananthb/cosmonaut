@@ -6,6 +6,7 @@ package daemon
 
 import (
 	"image/color"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -31,15 +32,20 @@ func updateStateDot(dot *canvas.Circle, state string) {
 	dot.Refresh()
 }
 
+// stateDotColor normalizes across the two state vocabularies in play:
+// GitHub codespaces report TitleCase ("Available", "Starting"), Coder
+// agents report lowercase ("ready", "running", "starting"). Before the
+// normalization a running Coder workspace got a grey "disabled" dot next
+// to a green RUNNING label.
 func stateDotColor(state string) color.Color {
-	switch state {
-	case "Available":
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "available", "ready", "running", "connected", "started":
 		return statusOK
-	case "Starting":
+	case "starting", "pending", "created", "creating", "initializing":
 		return statusWarn
-	case "Stopped":
+	case "stopped", "shutdown":
 		return theme.Color(theme.ColorNameDisabled)
-	case "Error":
+	case "error", "failed":
 		return statusError
 	default:
 		return theme.Color(theme.ColorNameDisabled)

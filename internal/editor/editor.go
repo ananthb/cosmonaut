@@ -5,8 +5,6 @@
 // command and is expected to understand the `ssh://alias/path` URI.
 package editor
 
-import "fmt"
-
 // Editor abstracts editor-specific operations.
 type Editor interface {
 	// Name returns the editor identifier (e.g. "zed", or the user's
@@ -30,9 +28,6 @@ func ForName(name string) (Editor, error) {
 	switch name {
 	case "", "zed", "zeditor":
 		return &ZedEditor{}, nil
-	}
-	if name == "" {
-		return nil, fmt.Errorf("editor name must not be empty")
 	}
 	return &GenericEditor{Command: name}, nil
 }

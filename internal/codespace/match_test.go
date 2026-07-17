@@ -2,6 +2,7 @@ package codespace
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/linuskendall/cosmonaut/internal/config"
@@ -61,7 +62,7 @@ func TestChooseCodespaceErrorsOnAmbiguous(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for ambiguous match")
 	}
-	if got := err.Error(); !contains(got, "Ambiguous") && !contains(got, "ambiguous") {
+	if got := err.Error(); !strings.Contains(got, "Ambiguous") && !strings.Contains(got, "ambiguous") {
 		t.Errorf("error = %q, want ambiguous", got)
 	}
 }
@@ -174,23 +175,10 @@ func TestDescribeCodespaceMarksMatchingEntry(t *testing.T) {
 	}
 
 	desc := DescribeCodespace(&cs, true)
-	if !contains(desc, "[matches config]") {
+	if !strings.Contains(desc, "[matches config]") {
 		t.Errorf("missing [matches config] in %q", desc)
 	}
-	if !contains(desc, "branch=main") {
+	if !strings.Contains(desc, "branch=main") {
 		t.Errorf("missing branch=main in %q", desc)
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
-}
-
-func containsHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

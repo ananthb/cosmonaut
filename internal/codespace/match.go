@@ -8,8 +8,11 @@ import (
 )
 
 // MatchesTarget checks whether a codespace matches a config target.
+// Repository comparison is case-insensitive: GitHub repo names are, and a
+// config that says "Acme/Demo" against an API that reports "acme/demo"
+// used to silently create a duplicate codespace on every launch.
 func MatchesTarget(cs *Codespace, t *config.Target) bool {
-	if string(cs.Repository) != t.Repository {
+	if !strings.EqualFold(string(cs.Repository), t.Repository) {
 		return false
 	}
 

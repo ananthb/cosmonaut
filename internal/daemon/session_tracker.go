@@ -3,6 +3,7 @@ package daemon
 import (
 	"log"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -135,10 +136,12 @@ func (s *SessionTracker) watchExit(pid int) {
 
 // findSSHPidsByAlias greps the process table for ssh processes whose command
 // line contains the alias. Uses `pgrep -f` which is available on both
-// macOS and Linux. False positives are avoided in practice because the
-// codespace alias is unique per codespace.
+// macOS and Linux. The alias is regexp-quoted: aliases contain `.` (e.g.
+// cs.name.github.dev), which as a metacharacter both over-matched and — a
+// bigger deal for the sleep inhibitor — could latch onto an unrelated
+// long-lived process and keep the machine awake indefinitely.
 func findSSHPidsByAlias(alias string) []int {
-	out, err := exec.Command("pgrep", "-f", "ssh.*"+alias).Output()
+	out, err := exec.Command("pgrep", "-f", `(^|/)ssh .*`+regexp.QuoteMeta(alias)).Output()
 	if err != nil {
 		return nil
 	}

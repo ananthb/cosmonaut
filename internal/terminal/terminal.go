@@ -68,9 +68,24 @@ end run`
 	}
 	for _, term := range linuxTerminals {
 		if _, err := exec.LookPath(term); err == nil {
-			if err := exec.Command(term, "-e", "sh", "-c", shellCmd).Run(); err != nil {
-				log.Printf("terminal: %s: %v", term, err)
+			// gnome-terminal deprecated (and modern releases removed) -e;
+			// `--` is the supported way to pass a command. Other terminals
+			// (alacritty, kitty, xterm) still use -e.
+			args := []string{"-e", "sh", "-c", shellCmd}
+			if term == "gnome-terminal" {
+				args = []string{"--", "sh", "-c", shellCmd}
 			}
+			// Start (not Run): Run blocks until the terminal window is
+			// closed, and callers invoke this synchronously from the
+			// TUI/GUI — the whole app froze until the user closed the
+			// spawned terminal. Release detaches so the child never
+			// becomes a zombie waiting on us.
+			cmd := exec.Command(term, args...)
+			if err := cmd.Start(); err != nil {
+				log.Printf("terminal: %s: %v", term, err)
+				return
+			}
+			_ = cmd.Process.Release()
 			return
 		}
 	}
