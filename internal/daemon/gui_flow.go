@@ -211,8 +211,8 @@ func (d *Daemon) runLaunchFlow(win fyne.Window, target config.Target, resolvedNa
 			}
 		}
 
-		workspacePath := guessWorkspacePath(target, selected)
-		if isWorkspaceRunning(*selected) {
+		workspacePath := provider.GuessWorkspacePath(target, selected)
+		if provider.IsWorkspaceRunning(*selected) {
 			paths := sshconfig.ResolvePaths()
 			if alias, ok := sshconfig.ReadExistingWorkspaceAlias(paths, selected.Provider, selected.Name); ok {
 				setStatus(fmt.Sprintf("Launching %s...", ed.Name()))

@@ -144,7 +144,7 @@ func runShell(configPath, targetName, codespaceName string, tmuxOverride, contro
 		return err
 	}
 
-	workspacePath := guessWorkspacePath(target, selected)
+	workspacePath := provider.GuessWorkspacePath(target, selected)
 	useTmux := resolveTmux(cfg, selected.Provider, selected.Name, tmuxOverride)
 	return execSSHShell(alias, workspacePath, useTmux)
 }

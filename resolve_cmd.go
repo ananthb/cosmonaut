@@ -135,7 +135,7 @@ func runResolve(configPath, targetName, codespaceName, _ string, controlMasterOv
 		return err
 	}
 
-	workspacePath := guessWorkspacePath(target, selected)
+	workspacePath := provider.GuessWorkspacePath(target, selected)
 
 	out := buildResolveOutput(resolvedTargetName, selected, alias, workspacePath)
 	return writeResolveJSON(stdout, out)

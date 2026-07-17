@@ -328,12 +328,12 @@ func run(configPath, targetName, codespaceName, editorFlag string, controlMaster
 		return err
 	}
 
-	workspacePath := guessWorkspacePath(target, selected)
+	workspacePath := provider.GuessWorkspacePath(target, selected)
 
 	// Fast path: if the workspace is already running and we have an SSH config
 	// on disk, skip the slow SSH wait + config fetch and
 	// go straight to launching the editor.
-	if isWorkspaceRunning(*selected) {
+	if provider.IsWorkspaceRunning(*selected) {
 		paths := sshconfig.ResolvePaths()
 		if alias, ok := sshconfig.ReadExistingWorkspaceAlias(paths, selected.Provider, selected.Name); ok {
 			if interactive {
@@ -404,28 +404,6 @@ func run(configPath, targetName, codespaceName, editorFlag string, controlMaster
 	}
 
 	return nil
-}
-
-func guessWorkspacePath(target config.Target, ws *provider.Workspace) string {
-	if target.WorkspacePath != "" {
-		return target.WorkspacePath
-	}
-	if ws != nil && ws.Provider == provider.NameCoder {
-		return "/workspaces/" + ws.Name
-	}
-	if target.Repository != "" {
-		parts := strings.SplitN(target.Repository, "/", 2)
-		return "/workspaces/" + parts[len(parts)-1]
-	}
-	if ws != nil && ws.Name != "" {
-		return "/workspaces/" + ws.Name
-	}
-	return "/workspaces"
-}
-
-func isWorkspaceRunning(ws provider.Workspace) bool {
-	state := strings.ToLower(ws.State)
-	return state == "available" || state == "ready" || state == "running" || state == "connected"
 }
 
 // targetForRepo finds a config target matching the repo, or builds a default.

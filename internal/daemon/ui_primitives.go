@@ -5,8 +5,11 @@
 package daemon
 
 import (
+	"fmt"
 	"image/color"
+	"net/url"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -84,4 +87,59 @@ func destructiveButton(label string, onTap func()) *widget.Button {
 	b := widget.NewButton(label, onTap)
 	b.Importance = widget.DangerImportance
 	return b
+}
+
+func stateColor(state string) color.Color {
+	switch state {
+	case "Available", "Started", "ready", "running", "connected":
+		return statusOK
+	case "Starting", "starting", "pending":
+		return statusWarn
+	case "Error":
+		return statusError
+	}
+	return theme.Color(theme.ColorNamePlaceHolder)
+}
+
+// formatTimeAgo turns an ISO 8601 timestamp into a relative time string.
+func formatTimeAgo(iso string) string {
+	if iso == "" {
+		return "—"
+	}
+	t, err := time.Parse(time.RFC3339, iso)
+	if err != nil {
+		return iso
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		m := int(d.Minutes())
+		if m == 1 {
+			return "1 min ago"
+		}
+		return fmt.Sprintf("%d min ago", m)
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		if h == 1 {
+			return "1 hour ago"
+		}
+		return fmt.Sprintf("%d hours ago", h)
+	default:
+		days := int(d.Hours() / 24)
+		if days == 1 {
+			return "yesterday"
+		}
+		return fmt.Sprintf("%d days ago", days)
+	}
+}
+
+func githubURL(pathSegments ...string) *url.URL {
+	u := url.URL{
+		Scheme: "https",
+		Host:   "github.com",
+		Path:   strings.Join(pathSegments, "/"),
+	}
+	return &u
 }
