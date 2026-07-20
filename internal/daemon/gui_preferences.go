@@ -101,7 +101,7 @@ func (d *Daemon) buildHealthSection(win fyne.Window) fyne.CanvasObject {
 	}
 
 	var failing, passing []doctor.Check
-	for _, c := range doctor.Catalog(d.ListErr) {
+	for _, c := range d.guiCatalog() {
 		if c.Status() == nil {
 			passing = append(passing, c)
 		} else {

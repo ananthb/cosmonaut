@@ -68,6 +68,13 @@ const trayApplyCooldown = 2 * time.Second
 func (d *Daemon) buildTrayMenu() *fyne.Menu {
 	var items []*fyne.MenuItem
 
+	// Auth problems hide the affected provider's submenu (see
+	// providerUsable), so surface a single prominent item at the top that
+	// routes to the settings Health section to fix sign-in.
+	if authItem := d.authIssueMenuItem(); authItem != nil {
+		items = append(items, authItem)
+	}
+
 	if githubItem := d.githubCodespacesMenu(); githubItem != nil {
 		items = append(items, githubItem)
 	}
@@ -118,7 +125,8 @@ func (d *Daemon) githubCodespacesMenu() *fyne.MenuItem {
 	// provider.IsGitHubAvailable() probe: this runs inside fyne.Do on
 	// every tray rebuild, and the probe execs `gh auth status` with a 5s
 	// timeout — an offline laptop froze the whole UI for seconds per
-	// rebuild.
+	// rebuild. providerUsable also hides the submenu on an auth error;
+	// authIssueMenuItem then routes the user to the Health section.
 	if len(all) == 0 && !d.providerUsable(provider.NameGitHub) {
 		return nil
 	}

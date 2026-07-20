@@ -227,7 +227,7 @@ func (m settingsModel) handleKey(msg tea.KeyMsg, d *AppletData) (settingsModel, 
 func (m settingsModel) moveCursor(delta int, d *AppletData) settingsModel {
 	switch m.section {
 	case secHealth:
-		n := len(doctor.Catalog(d.ListErr))
+		n := len(d.HealthCatalog())
 		if n == 0 {
 			return m
 		}
@@ -302,7 +302,7 @@ func (m *settingsModel) persistHotkey(d *AppletData) {
 func (m settingsModel) activate(d *AppletData) (settingsModel, tea.Cmd) {
 	switch m.section {
 	case secHealth:
-		checks := doctor.Catalog(d.ListErr)
+		checks := d.HealthCatalog()
 		if m.healthCursor >= len(checks) {
 			return m, nil
 		}
@@ -385,7 +385,7 @@ func (m settingsModel) sectionHeader(name string, sec settingsSection) string {
 }
 
 func (m settingsModel) renderHealth(d *AppletData) string {
-	checks := doctor.Catalog(d.ListErr)
+	checks := d.HealthCatalog()
 	var lines []string
 	lines = append(lines, m.sectionHeader("HEALTH", secHealth))
 	var failing, passing []doctor.Check

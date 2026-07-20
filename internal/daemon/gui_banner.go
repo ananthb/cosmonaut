@@ -17,12 +17,13 @@ import (
 )
 
 // refreshBanner re-renders the top banner. The banner is sourced from
-// the doctor.Catalog so adding a check there automatically gives it a
-// banner. Each banner can be dismissed; dismissed checks remain visible
-// in the Settings page Health section.
+// guiCatalog so adding a check there automatically gives it a banner,
+// and both providers' auth checks surface independently. Each banner can
+// be dismissed; dismissed checks remain visible in the Settings page
+// Health section.
 func (uw *unifiedWindow) refreshBanner() {
 	uw.banner.Objects = nil
-	for _, c := range doctor.Catalog(uw.daemon.ListErr) {
+	for _, c := range uw.daemon.guiCatalog() {
 		issue := c.Status()
 		if issue == nil || uw.daemon.IsDismissed(c.ID) {
 			continue

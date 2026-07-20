@@ -93,6 +93,33 @@ func CatalogForProvider(providerName string, listErr func() error) []Check {
 	return checks
 }
 
+// ProviderListErr pairs a provider name with a supplier of that
+// provider's most recent list error. Used by CatalogForProviders.
+type ProviderListErr struct {
+	Name    string
+	ListErr func() error
+}
+
+// CatalogForProviders returns the shared SSH checks plus the auth/scope
+// check for each provider whose error supplier is given, wired to read
+// only that provider's error. Unlike CatalogForProvider (single active
+// provider, used by the CLI) this lets a GUI surface both providers'
+// auth problems side by side: a Coder login failure and a GitHub scope
+// failure each render independently, and neither shows when its
+// provider's error is nil or unrelated.
+func CatalogForProviders(providers ...ProviderListErr) []Check {
+	var provChecks []Check
+	for _, p := range providers {
+		switch p.Name {
+		case provider.NameGitHub:
+			provChecks = append(provChecks, ghCodespaceScopeCheck(p.ListErr))
+		case provider.NameCoder:
+			provChecks = append(provChecks, coderLoginCheck(p.ListErr))
+		}
+	}
+	return append(provChecks, sshHostStarCheck(), sshIncludeDirCheck())
+}
+
 // FindByID returns the check with the given ID, or nil.
 func FindByID(checks []Check, id string) *Check {
 	for i := range checks {
@@ -116,7 +143,7 @@ func coderLoginCheck(listErr func() error) Check {
 			"`coder` session. Without one, the sidebar stays empty.",
 		Status: func() *Issue {
 			err := listErr()
-			if err == nil || !isCoderUnauthenticated(err) {
+			if err == nil || !IsCoderUnauthenticated(err) {
 				return nil
 			}
 			return &Issue{
@@ -128,12 +155,12 @@ func coderLoginCheck(listErr func() error) Check {
 	}
 }
 
-// isCoderUnauthenticated reports whether err looks like a coder CLI
+// IsCoderUnauthenticated reports whether err looks like a coder CLI
 // authentication failure. The coder CLI's wording has varied over
 // releases ("Login required", "Unauthorized", "your session has
 // expired"), so match the same set of substrings the daemon tray and
 // TUI already key off so all three surfaces stay in sync.
-func isCoderUnauthenticated(err error) bool {
+func IsCoderUnauthenticated(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -143,6 +170,23 @@ func isCoderUnauthenticated(err error) bool {
 		strings.Contains(msg, "unauthorized") ||
 		strings.Contains(msg, "session has expired") ||
 		strings.Contains(msg, "login required")
+}
+
+// IsGitHubAuthIssue reports whether err from a `gh codespace list` looks
+// like an auth/authorization problem the user must resolve — either the
+// token is missing the codespace scope or gh is not logged in — rather
+// than a transient failure (network blip, timeout). Kept next to
+// IsCoderUnauthenticated so the tray, banner, and Health section all key
+// off one definition per provider.
+func IsGitHubAuthIssue(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, `needs the "codespace" scope`) ||
+		strings.Contains(msg, "not logged") ||
+		strings.Contains(msg, "authentication") ||
+		strings.Contains(msg, "gh auth login")
 }
 
 func ghCodespaceScopeCheck(listErr func() error) Check {

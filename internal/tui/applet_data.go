@@ -11,6 +11,7 @@ import (
 	"github.com/linuskendall/cosmonaut/internal/codespace"
 	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/daemon"
+	"github.com/linuskendall/cosmonaut/internal/doctor"
 	"github.com/linuskendall/cosmonaut/internal/provider"
 )
 
@@ -113,6 +114,25 @@ func (d *AppletData) StatusFor(name string) ProviderStatus {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.providerStatus[name]
+}
+
+// HealthCatalog builds the doctor catalog the settings Health section
+// renders. Like the GUI, it includes every provider's auth check wired
+// to that provider's own cached error, so a Coder login problem and a
+// GitHub scope problem surface independently rather than only the
+// effective provider's.
+func (d *AppletData) HealthCatalog() []doctor.Check {
+	providers := []doctor.ProviderListErr{
+		{Name: provider.NameGitHub, ListErr: d.providerListErr(provider.NameGitHub)},
+		{Name: provider.NameCoder, ListErr: d.providerListErr(provider.NameCoder)},
+	}
+	return doctor.CatalogForProviders(providers...)
+}
+
+// providerListErr returns a supplier of the named provider's most recent
+// cached list error, backed by the per-provider status snapshot.
+func (d *AppletData) providerListErr(name string) func() error {
+	return func() error { return d.StatusFor(name).Err }
 }
 
 // PortCache returns a snapshot of the ports section for the named
