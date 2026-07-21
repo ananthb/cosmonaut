@@ -1,35 +1,35 @@
 // Package editor abstracts editor-specific operations for launching and
-// configuring remote connections to codespaces. Implementations exist for
-// Zed and Neovim.
+// configuring remote connections to codespaces. Zed is built in as the
+// default since cosmonaut writes Zed-flavored config files when it
+// detects Zed; every other editor is launched as a plain external
+// command and is expected to understand the `ssh://alias/path` URI.
 package editor
-
-import "fmt"
 
 // Editor abstracts editor-specific operations.
 type Editor interface {
-	// Name returns the editor identifier (e.g. "zed", "neovim").
+	// Name returns the editor identifier (e.g. "zed", or the user's
+	// custom binary name).
 	Name() string
 	// FindBinary locates the editor's CLI binary on PATH.
 	FindBinary() (string, error)
 	// ConfigureConnection sets up editor-specific config for the SSH
-	// connection (e.g. Zed's settings.json). No-op for editors that
-	// don't need it.
+	// connection (e.g. Zed's settings.json). Generic editors return nil.
 	ConfigureConnection(sshAlias, workspacePath, nickname string, uploadBinary *bool) error
-	// LaunchRemote opens the editor connected to the remote codespace.
+	// LaunchRemote opens the editor connected to the remote workspace.
 	LaunchRemote(sshAlias, workspacePath string) error
 }
 
-// ForName returns an Editor implementation for the given name.
-// An empty name defaults to "zed".
+// ForName returns an Editor implementation for the given name. An empty
+// name (or "zed" / "zeditor") returns the Zed editor with its
+// settings.json plumbing; any other name is wired through GenericEditor
+// — which just runs `<name> ssh://<alias>/<path>` and lets the caller's
+// editor handle the URI.
 func ForName(name string) (Editor, error) {
 	switch name {
-	case "", "zed":
+	case "", "zed", "zeditor":
 		return &ZedEditor{}, nil
-	case "neovim", "nvim":
-		return &NeovimEditor{}, nil
-	default:
-		return nil, fmt.Errorf("unknown editor %q (supported: zed, neovim)", name)
 	}
+	return &GenericEditor{Command: name}, nil
 }
 
 // ResolveNickname determines the nickname for a connection.

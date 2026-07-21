@@ -6,7 +6,10 @@ package daemon
 import (
 	"log"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -17,6 +20,11 @@ import (
 	"github.com/linuskendall/cosmonaut/internal/provider"
 )
 
+// autoPollMinInterval is the shortest gap allowed between event-driven
+// polls. Tray-open and window-focus events fire often; this debounce
+// keeps us from re-hitting the backends on every interaction.
+const autoPollMinInterval = 30 * time.Second
+
 // Daemon is the long-running background process that hosts the system tray,
 // hotkey listener, and codespace poller.
 type Daemon struct {
@@ -26,20 +34,50 @@ type Daemon struct {
 
 	app fyne.App
 
-	mu         sync.Mutex
-	codespaces []codespace.Codespace
-	workspaces []provider.Workspace
-	portCache  map[string]portCacheEntry
-	listErr    error
-	stopCh     chan struct{}
-	sessions   *SessionTracker
-	forwards   *PortForwardManager
+	mu             sync.Mutex
+	codespaces     []codespace.Codespace
+	workspaces     []provider.Workspace
+	portCache      map[string]portCacheEntry
+	listErr        error
+	providerStatus map[string]ProviderStatus
+	lastPollAt     time.Time
+	pollInFlight   bool
+	pollCond       *sync.Cond  // signals when a poll slot frees; broadcast under mu
+	trayOpenedAt   time.Time   // last time the tray menu was opened; zero before first open
+	lastApplyAt    time.Time   // last time applyTrayMenu actually ran; zero before first apply
+	pendingRebuild bool        // a rebuild was deferred while the tray was in-use
+	rebuildTimer   *time.Timer // wakes up to retry a deferred rebuild after the gate window
+	stopCh         chan struct{}
+	stopOnce       sync.Once
+	sessions       *SessionTracker
+	forwards       *PortForwardManager
+
+	// nowFunc returns the current time. Overridable for tests so the
+	// tray rebuild gate can be exercised without sleeping in real time.
+	nowFunc func() time.Time
+	// applyTrayMenuFunc, when non-nil, replaces the real Fyne SetSystemTrayMenu
+	// call. Used by tests to observe apply events without a Fyne app.
+	applyTrayMenuFunc func()
 
 	dismissMu sync.Mutex
 	dismissed map[string]bool
 
 	uwMu     sync.Mutex
 	activeUW *unifiedWindow
+
+	// Workspace-change listeners. Fired on the Fyne main thread when a
+	// poll lands and the workspace set has actually changed (see
+	// workspacesDiffer). Used by the GUI sidebar to refresh its tree
+	// without requiring the user to click a refresh button.
+	listenersMu  sync.Mutex
+	listeners    map[int]func()
+	nextListener int
+
+	// Theme-change listeners: fired when the OS flips light/dark, so
+	// canvas primitives (which snapshot color at construction) get rebuilt.
+	themeMu           sync.Mutex
+	themeListeners    map[int]func()
+	nextThemeListener int
 }
 
 // setActiveUnifiedWindow records the currently-open main window so other
@@ -87,17 +125,29 @@ func (d *Daemon) IsDismissed(id string) bool {
 // New creates a new Daemon with the given config.
 func New(cfg *config.Config, configPath string) *Daemon {
 	mode := "off"
-	if cfg != nil && cfg.Daemon != nil {
-		mode = cfg.Daemon.InhibitSleep
+	if dm := cfg.EnsureDaemon(); dm.InhibitSleep != "" {
+		mode = dm.InhibitSleep
 	}
-	return &Daemon{
+	d := &Daemon{
 		Cfg:        cfg,
 		ConfigPath: configPath,
 		Runner:     codespace.DefaultGHRunner{},
 		stopCh:     make(chan struct{}),
 		sessions:   newSessionTracker(mode),
 		forwards:   newPortForwardManager(),
+		nowFunc:    time.Now,
 	}
+	d.pollCond = sync.NewCond(&d.mu)
+	return d
+}
+
+// now returns the current time via nowFunc when set, or time.Now otherwise.
+// Tests can swap nowFunc to drive the tray rebuild gate deterministically.
+func (d *Daemon) now() time.Time {
+	if d.nowFunc != nil {
+		return d.nowFunc()
+	}
+	return time.Now()
 }
 
 // Run starts all applet components. It blocks until Stop is called.
@@ -109,7 +159,29 @@ func (d *Daemon) Run() error {
 	d.app.Settings().SetTheme(newCosmoTheme())
 	d.app.SetIcon(appIcon())
 
+	prevVariant := d.app.Settings().ThemeVariant()
+	d.app.Settings().AddListener(func(s fyne.Settings) {
+		v := s.ThemeVariant()
+		if v == prevVariant {
+			return
+		}
+		prevVariant = v
+		d.notifyThemeListeners()
+	})
+
 	log.Printf("applet started (pid %d)", os.Getpid())
+
+	// Release inhibitors and kill port-forward children on SIGTERM/SIGINT
+	// (logout, systemctl --user stop, Ctrl-C). Without this the Setpgid
+	// children survive daemon death — worst case an orphaned block-mode
+	// systemd-inhibit that keeps the machine from ever sleeping.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("received %s, shutting down", sig)
+		d.Stop()
+	}()
 
 	// Run the initial poll synchronously so the tray menu has
 	// codespace data before it is first displayed.
@@ -118,6 +190,10 @@ func (d *Daemon) Run() error {
 	// Start background workers.
 	go d.startPoller()
 	go d.startHotkeyListener()
+	go d.watchTrayOpened()
+	d.app.Lifecycle().SetOnEnteredForeground(func() {
+		d.maybePollAsync()
+	})
 	d.startPreWarm()
 
 	// Create a hidden master window so popover windows don't quit the app on close.
@@ -137,27 +213,26 @@ func (d *Daemon) Run() error {
 	return nil
 }
 
-// Stop signals the applet to shut down.
+// Stop signals the applet to shut down. Safe to call from any goroutine
+// and more than once (tray Quit racing a SIGTERM must not double-close
+// stopCh or run cleanup twice).
 func (d *Daemon) Stop() {
-	select {
-	case <-d.stopCh:
-		return
-	default:
+	d.stopOnce.Do(func() {
 		close(d.stopCh)
-	}
 
-	if d.sessions != nil {
-		d.sessions.Stop()
-	}
-	if d.forwards != nil {
-		d.forwards.StopAll()
-	}
+		if d.sessions != nil {
+			d.sessions.Stop()
+		}
+		if d.forwards != nil {
+			d.forwards.StopAll()
+		}
 
-	if d.app != nil {
-		d.app.Quit()
-	}
+		if d.app != nil {
+			d.app.Quit()
+		}
 
-	log.Println("applet stopped")
+		log.Println("applet stopped")
+	})
 }
 
 // Codespaces returns the last-polled codespace list.
@@ -205,4 +280,73 @@ func (d *Daemon) SetListErr(err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.listErr = err
+}
+
+// AddWorkspaceListener registers fn to be invoked on the Fyne main
+// thread after each poll where the workspace set has actually changed.
+// Returns a remove function that the caller MUST invoke when the
+// owning window closes — otherwise fn will keep firing into freed
+// widgets.
+//
+// Listeners are an alternative to polling d.Workspaces() on every
+// render: the GUI sidebar uses one to refresh its tree the moment new
+// data lands, instead of waiting for the user to click somewhere.
+func (d *Daemon) AddWorkspaceListener(fn func()) (remove func()) {
+	d.listenersMu.Lock()
+	defer d.listenersMu.Unlock()
+	if d.listeners == nil {
+		d.listeners = map[int]func(){}
+	}
+	d.nextListener++
+	id := d.nextListener
+	d.listeners[id] = fn
+	return func() {
+		d.listenersMu.Lock()
+		delete(d.listeners, id)
+		d.listenersMu.Unlock()
+	}
+}
+
+// notifyWorkspaceListeners fires every registered listener on the Fyne
+// main thread. Snapshots the listener map under the lock so a listener
+// can safely unregister itself (or another listener) without racing the
+// dispatch loop.
+func (d *Daemon) notifyWorkspaceListeners() {
+	d.listenersMu.Lock()
+	fns := make([]func(), 0, len(d.listeners))
+	for _, fn := range d.listeners {
+		fns = append(fns, fn)
+	}
+	d.listenersMu.Unlock()
+	for _, fn := range fns {
+		fyne.Do(fn)
+	}
+}
+
+func (d *Daemon) addThemeListener(fn func()) (remove func()) {
+	d.themeMu.Lock()
+	defer d.themeMu.Unlock()
+	if d.themeListeners == nil {
+		d.themeListeners = map[int]func(){}
+	}
+	d.nextThemeListener++
+	id := d.nextThemeListener
+	d.themeListeners[id] = fn
+	return func() {
+		d.themeMu.Lock()
+		delete(d.themeListeners, id)
+		d.themeMu.Unlock()
+	}
+}
+
+func (d *Daemon) notifyThemeListeners() {
+	d.themeMu.Lock()
+	fns := make([]func(), 0, len(d.themeListeners))
+	for _, fn := range d.themeListeners {
+		fns = append(fns, fn)
+	}
+	d.themeMu.Unlock()
+	for _, fn := range fns {
+		fyne.Do(fn)
+	}
 }

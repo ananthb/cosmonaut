@@ -4,18 +4,19 @@ go 1.26.1
 
 require (
 	fyne.io/fyne/v2 v2.7.4-0.20260404155105-c53f9d6e424e
+	fyne.io/systray v1.12.0
 	github.com/adrg/xdg v0.5.3
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/spf13/cobra v1.10.2
+	github.com/tailscale/hujson v0.0.0-20260302212456-ecc657c15afd
 	golang.design/x/hotkey v0.4.1
 	golang.org/x/sys v0.43.0
 	golang.org/x/term v0.42.0
 )
 
 require (
-	fyne.io/systray v1.12.0 // indirect
 	github.com/BurntSushi/toml v1.5.0 // indirect
 	github.com/FyshOS/fancyfs v0.0.0-20251025194026-1f03098ff624 // indirect
 	github.com/anthonynsimon/bild v0.13.0 // indirect

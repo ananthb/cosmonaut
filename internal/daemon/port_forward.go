@@ -40,6 +40,13 @@ type PortForwardManager struct {
 }
 
 func newPortForwardManager() *PortForwardManager {
+	return NewPortForwardManager()
+}
+
+// NewPortForwardManager constructs an empty PortForwardManager. Exported so
+// the TUI applet (in internal/tui) can reuse the same supervisor logic that
+// the Fyne applet uses, rather than reimplementing it.
+func NewPortForwardManager() *PortForwardManager {
 	return &PortForwardManager{
 		forwards: make(map[portForwardKey]*managedPortForward),
 		lastErr:  make(map[portForwardKey]string),
@@ -62,38 +69,56 @@ func (m *PortForwardManager) StartProtocol(providerName, workspaceName, protocol
 		return err
 	}
 
-	m.mu.Lock()
-	if _, ok := m.forwards[key]; ok {
-		m.mu.Unlock()
-		return nil
-	}
-	if other, ok := m.localPortOwnerLocked(localPort); ok {
-		m.mu.Unlock()
-		return fmt.Errorf("localhost port %d is already forwarded to %s:%d", localPort, other.Workspace, other.RemotePort)
-	}
-	m.mu.Unlock()
-
-	if err := ensureLocalPortAvailable(key.Protocol, localPort); err != nil {
-		return err
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	command, args := buildPortForwardCommand(key)
 	cmd := exec.CommandContext(ctx, command, args...)
 	output := &boundedBuffer{limit: 16 * 1024}
+	managed := &managedPortForward{key: key, cancel: cancel, output: output}
+
+	// Reserve the key in the map inside ONE critical section, before any
+	// slow work. The old check-then-start-then-insert let two concurrent
+	// Starts for the same key both pass the checks and both spawn a
+	// process — the second's insert overwrote the first's entry, making
+	// its cancel unreachable so StopAll could never kill that process.
+	m.mu.Lock()
+	if _, ok := m.forwards[key]; ok {
+		m.mu.Unlock()
+		cancel()
+		return nil
+	}
+	if other, ok := m.localPortOwnerLocked(localPort); ok {
+		m.mu.Unlock()
+		cancel()
+		return fmt.Errorf("localhost port %d is already forwarded to %s:%d", localPort, other.Workspace, other.RemotePort)
+	}
+	m.forwards[key] = managed
+	delete(m.lastErr, key)
+	m.mu.Unlock()
+
+	unreserve := func() {
+		m.mu.Lock()
+		if current := m.forwards[key]; current == managed {
+			delete(m.forwards, key)
+		}
+		m.mu.Unlock()
+	}
+
+	if err := ensureLocalPortAvailable(key.Protocol, localPort); err != nil {
+		unreserve()
+		cancel()
+		return err
+	}
+	// On Linux, Pdeathsig ensures a crashed/SIGKILLed daemon can't leave
+	// gh/coder forward processes holding local ports.
+	cmd.SysProcAttr = daemonChildSysProcAttr()
 	cmd.Stdout = output
 	cmd.Stderr = output
 
 	if err := cmd.Start(); err != nil {
+		unreserve()
 		cancel()
 		return fmt.Errorf("starting port forward: %w", err)
 	}
-
-	managed := &managedPortForward{key: key, cancel: cancel, output: output}
-	m.mu.Lock()
-	m.forwards[key] = managed
-	delete(m.lastErr, key)
-	m.mu.Unlock()
 
 	done := make(chan error, 1)
 	go func() {
@@ -239,7 +264,7 @@ func buildPortForwardCommand(key portForwardKey) (string, []string) {
 		if key.Protocol == "udp" {
 			flag = "--udp"
 		}
-		return "coder", []string{
+		return provider.NameCoder, []string{
 			"port-forward",
 			key.Workspace,
 			flag,

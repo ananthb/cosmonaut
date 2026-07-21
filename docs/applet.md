@@ -18,17 +18,9 @@ cosmonaut applet
 
 The `autoStop` target field is reserved for a future idle-based auto-stop feature but is not yet acted on; codespace idle timeouts today come from `idleTimeout` passed to `gh codespace create`.
 
-## Hotkey actions
+## Hotkey
 
-The `hotkeyAction` config option controls what happens when you press the hotkey:
-
-| Value | Behavior |
-|---|---|
-| `picker` (default) | Opens the interactive repo/codespace picker in a native window |
-| `previous` | Launches the most recently used target from history |
-| `default` | Launches the config's `defaultTarget` |
-
-Both `previous` and `default` fall back to the picker if there's no history or no default target.
+The hotkey launches the configured `defaultTarget` via the same Launch flow as the tray menu. If no `defaultTarget` is set, it opens the interactive picker instead.
 
 ## Tray menu structure
 

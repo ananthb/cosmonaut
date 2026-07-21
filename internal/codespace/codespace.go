@@ -5,6 +5,7 @@ package codespace
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -61,6 +62,10 @@ type Codespace struct {
 // GHRunner abstracts the GitHub CLI for testability.
 type GHRunner interface {
 	Run(args []string) (string, error)
+	// RunCtx is like Run but cancels the underlying process when ctx is
+	// done. Used by the daemon poller to cap long-running list calls so
+	// a hung gh doesn't pin the in-flight poll slot.
+	RunCtx(ctx context.Context, args []string) (string, error)
 	RunMerged(args []string) (string, error)
 	// RunInteractive runs a command with stdin connected and output teed to
 	// both a capture buffer and the real terminal. Use this when the gh
@@ -75,11 +80,18 @@ type GHRunner interface {
 type DefaultGHRunner struct{}
 
 func (d DefaultGHRunner) Run(args []string) (string, error) {
-	cmd := exec.Command("gh", args...)
+	return d.RunCtx(context.Background(), args)
+}
+
+func (d DefaultGHRunner) RunCtx(ctx context.Context, args []string) (string, error) {
+	cmd := exec.CommandContext(ctx, "gh", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("gh %s timed out", strings.Join(args, " "))
+		}
 		detail := strings.TrimSpace(stderr.String())
 		if detail == "" {
 			detail = strings.TrimSpace(stdout.String())
@@ -166,7 +178,14 @@ func ListCodespaces(runner GHRunner, repository string) ([]Codespace, error) {
 
 // ListAllCodespaces returns all codespaces across all repos.
 func ListAllCodespaces(runner GHRunner) ([]Codespace, error) {
-	out, err := runner.Run([]string{
+	return ListAllCodespacesCtx(context.Background(), runner)
+}
+
+// ListAllCodespacesCtx is the context-aware variant of ListAllCodespaces.
+// The daemon poller uses this to cap how long a hung `gh codespace list`
+// can pin the in-flight poll slot.
+func ListAllCodespacesCtx(ctx context.Context, runner GHRunner) ([]Codespace, error) {
+	out, err := runner.RunCtx(ctx, []string{
 		"codespace", "list",
 		"--json", "name,displayName,repository,state,gitStatus,machineName,createdAt,lastUsedAt",
 	})
@@ -231,7 +250,14 @@ func FilterByRepo(codespaces []Codespace, repo string) []Codespace {
 	return result
 }
 
-var codespaceNameRe = regexp.MustCompile(`[A-Za-z0-9-]+-[A-Za-z0-9]{6,}`)
+// codespaceNameRe matches a real GitHub codespace name: a multi-word
+// petname plus a trailing alphanumeric hash (e.g.
+// "expert-spoon-vwqr5wq4x73xjpj"). The old pattern
+// ([A-Za-z0-9-]+-[A-Za-z0-9]{6,}) matched ordinary hyphenated words gh
+// echoes in its prompts — a branch like "fix-timeout-handling" matched
+// before the actual name, and the follow-up `codespace view` targeted the
+// wrong string.
+var codespaceNameRe = regexp.MustCompile(`\b[a-z0-9]+(?:-[a-z0-9]+)+-[a-z0-9]{10,}\b`)
 
 // CreateCodespace creates a new codespace by POSTing directly to the GitHub REST
 // API (`POST /repos/{owner}/{repo}/codespaces`). This bypasses the interactive
@@ -350,10 +376,13 @@ func CreateCodespaceInteractive(runner GHRunner, target config.Target) (*Codespa
 		return nil, err
 	}
 
-	match := codespaceNameRe.FindString(combined)
-	if match == "" {
+	// Take the LAST match: gh prints the created codespace name at the end
+	// of its output, after prompts that may echo repo/branch strings.
+	matches := codespaceNameRe.FindAllString(combined, -1)
+	if len(matches) == 0 {
 		return nil, fmt.Errorf("codespace created but name could not be determined from gh output:\n%s", strings.TrimSpace(combined))
 	}
+	match := matches[len(matches)-1]
 
 	out, err := runner.Run([]string{
 		"codespace", "view",

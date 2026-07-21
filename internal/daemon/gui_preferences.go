@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"log"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -15,6 +16,7 @@ import (
 	"github.com/linuskendall/cosmonaut/internal/codespace"
 	"github.com/linuskendall/cosmonaut/internal/config"
 	"github.com/linuskendall/cosmonaut/internal/doctor"
+	"github.com/linuskendall/cosmonaut/internal/terminal"
 )
 
 // buildSettingsPanel builds the settings content panel for the unified window.
@@ -41,16 +43,14 @@ func (d *Daemon) buildSettingsPanel(win fyne.Window) fyne.CanvasObject {
 
 	// Daemon settings.
 	if d.Cfg != nil {
-		if d.Cfg.Daemon == nil {
-			d.Cfg.Daemon = &config.DaemonConfig{}
-		}
+		d.Cfg.EnsureDaemon()
 		items = append(items, d.buildDaemonSection())
 		items = append(items, widget.NewSeparator())
 	}
 
 	// Default target settings.
-	if d.Cfg != nil && d.Cfg.DefaultTarget != "" {
-		if _, ok := d.Cfg.Targets[d.Cfg.DefaultTarget]; ok {
+	if defaultTarget := d.Cfg.GetDefaultTarget(); defaultTarget != "" {
+		if _, ok := d.Cfg.Target(defaultTarget); ok {
 			items = append(items, d.buildTargetSection())
 			items = append(items, widget.NewSeparator())
 		}
@@ -76,13 +76,18 @@ func (d *Daemon) showPreferences() {
 		win.SetFixedSize(true)
 		win.CenterOnScreen()
 		win.SetContent(d.buildSettingsPanel(win))
+		unsubscribeTheme := d.addThemeListener(func() {
+			win.SetContent(d.buildSettingsPanel(win))
+		})
+		win.SetOnClosed(unsubscribeTheme)
 		win.Show()
 	})
 }
 
-// buildHealthSection lists every doctor check with its current status
-// and a Fix button when applicable. Even if a user dismissed the main
-// window banner, the same fix is reachable here.
+// buildHealthSection renders the doctor catalog. Failing checks stay
+// fully visible with their fix actions; passing checks are folded into
+// a single collapsed accordion row so the section stays compact when
+// everything is healthy.
 func (d *Daemon) buildHealthSection(win fyne.Window) fyne.CanvasObject {
 	heading := widget.NewLabel("Health checks")
 	heading.TextStyle = fyne.TextStyle{Bold: true}
@@ -95,10 +100,36 @@ func (d *Daemon) buildHealthSection(win fyne.Window) fyne.CanvasObject {
 		d.refreshMainWindowBanner()
 	}
 
+	var failing, passing []doctor.Check
+	for _, c := range d.guiCatalog() {
+		if c.Status() == nil {
+			passing = append(passing, c)
+		} else {
+			failing = append(failing, c)
+		}
+	}
+
 	rows := []fyne.CanvasObject{heading}
-	for _, c := range doctor.Catalog(d.ListErr) {
+	for _, c := range failing {
 		rows = append(rows, d.buildHealthRow(c, win, rebuild))
 	}
+
+	if len(passing) > 0 {
+		var title string
+		if len(failing) == 0 {
+			title = fmt.Sprintf("✓ All OK (%d checks)", len(passing))
+		} else {
+			title = fmt.Sprintf("Other checks passing (%d)", len(passing))
+		}
+		var passingRows []fyne.CanvasObject
+		for _, c := range passing {
+			passingRows = append(passingRows, d.buildHealthRow(c, win, rebuild))
+		}
+		detail := container.NewVBox(passingRows...)
+		acc := widget.NewAccordion(widget.NewAccordionItem(title, detail))
+		rows = append(rows, acc)
+	}
+
 	return container.NewVBox(rows...)
 }
 
@@ -109,13 +140,13 @@ func (d *Daemon) buildHealthRow(c doctor.Check, win fyne.Window, rebuild func())
 	var statusText string
 	switch {
 	case issue == nil:
-		dotColor = cLime
+		dotColor = statusOK
 		statusText = "OK"
 	case issue.Severity == doctor.SeverityError:
-		dotColor = cRed
+		dotColor = statusError
 		statusText = "Error"
 	default:
-		dotColor = cOrange
+		dotColor = statusWarn
 		statusText = "Warning"
 	}
 	dot := canvas.NewCircle(dotColor)
@@ -163,7 +194,7 @@ func (d *Daemon) buildHealthRow(c doctor.Check, win fyne.Window, rebuild func())
 		case c.HasTerminalFix():
 			btn = primaryButton("Fix in terminal", func() {
 				cmd := c.FixCommand() + `; echo; echo "Press enter to close"; read _`
-				go openCommandInTerminal(cmd)
+				go terminal.OpenCommandInTerminal(cmd)
 			})
 		}
 		recheckBtn := widget.NewButton("Re-check", func() { rebuild() })
@@ -200,15 +231,10 @@ func (d *Daemon) refreshMainWindowBanner() {
 }
 
 func (d *Daemon) buildAuthSection(win fyne.Window) fyne.CanvasObject {
-	authed := codespace.EnsureGHAuth(d.Runner) == nil
-
-	var statusText string
-	if authed {
-		statusText = "GitHub: authenticated"
-	} else {
-		statusText = "GitHub: not authenticated"
-	}
-	statusLabel := widget.NewLabel(statusText)
+	// EnsureGHAuth execs `gh auth status` (network round-trip) and this
+	// builder runs on the Fyne main thread on every settings rebuild —
+	// probe asynchronously and fill the section in via fyne.Do.
+	statusLabel := widget.NewLabel("GitHub: checking…")
 
 	// After an auth-state change, the section's button label and the tray
 	// menu both need to reflect the new state. Rebuilding the whole settings
@@ -222,87 +248,87 @@ func (d *Daemon) buildAuthSection(win fyne.Window) fyne.CanvasObject {
 		}
 	}
 
-	var actionBtn *widget.Button
-	if authed {
-		actionBtn = widget.NewButton("Remove auth", func() {
-			actionBtn.Disable()
-			go func() {
-				_, err := d.Runner.Run([]string{"auth", "logout", "--hostname", "github.com"})
-				fyne.Do(func() {
-					if err != nil {
-						log.Printf("auth logout: %v", err)
-						dialog.ShowError(fmt.Errorf("gh auth logout failed: %w", err), win)
-						actionBtn.Enable()
-						return
-					}
-					refresh()
-				})
-			}()
-		})
-	} else {
-		actionBtn = widget.NewButton("Log in...", func() {
-			actionBtn.Disable()
-			go func() {
-				_, err := d.Runner.Run([]string{"auth", "login", "--web", "--hostname", "github.com"})
-				fyne.Do(func() {
-					if err != nil {
-						log.Printf("auth login: %v", err)
-						dialog.ShowError(fmt.Errorf("gh auth login failed: %w", err), win)
-						actionBtn.Enable()
-						return
-					}
-					refresh()
-				})
-			}()
-		})
+	actionBtn := widget.NewButton("Log in...", nil)
+	actionBtn.Disable()
+
+	logout := func() {
+		actionBtn.Disable()
+		go func() {
+			_, err := d.Runner.Run([]string{"auth", "logout", "--hostname", "github.com"})
+			fyne.Do(func() {
+				if err != nil {
+					log.Printf("auth logout: %v", err)
+					dialog.ShowError(fmt.Errorf("gh auth logout failed: %w", err), win)
+					actionBtn.Enable()
+					return
+				}
+				refresh()
+			})
+		}()
 	}
+	login := func() {
+		actionBtn.Disable()
+		go func() {
+			_, err := d.Runner.Run([]string{"auth", "login", "--web", "--hostname", "github.com"})
+			fyne.Do(func() {
+				if err != nil {
+					log.Printf("auth login: %v", err)
+					dialog.ShowError(fmt.Errorf("gh auth login failed: %w", err), win)
+					actionBtn.Enable()
+					return
+				}
+				refresh()
+			})
+		}()
+	}
+
+	go func() {
+		authed := codespace.EnsureGHAuth(d.Runner) == nil
+		fyne.Do(func() {
+			if authed {
+				statusLabel.SetText("GitHub: authenticated")
+				actionBtn.SetText("Remove auth")
+				actionBtn.OnTapped = logout
+			} else {
+				statusLabel.SetText("GitHub: not authenticated")
+				actionBtn.SetText("Log in...")
+				actionBtn.OnTapped = login
+			}
+			actionBtn.Enable()
+		})
+	}()
 
 	return container.NewHBox(statusLabel, layout.NewSpacer(), actionBtn)
 }
 
 func (d *Daemon) buildEditorSection() fyne.CanvasObject {
-	currentEditor := d.Cfg.Editor
-	if currentEditor == "" {
-		currentEditor = "zed"
-	}
-	editorSelect := widget.NewSelect([]string{"zed", "neovim"}, func(val string) {
-		d.Cfg.Editor = val
+	editorEntry := widget.NewEntry()
+	editorEntry.SetPlaceHolder("zed (default)")
+	editorEntry.SetText(d.Cfg.GetEditor())
+	editorEntry.OnSubmitted = func(val string) {
+		d.Cfg.SetEditor(val)
 		d.persistConfig()
-	})
-	editorSelect.Selected = currentEditor
-
-	return widget.NewForm(widget.NewFormItem("Editor", editorSelect))
+	}
+	return widget.NewForm(widget.NewFormItem("Editor", editorEntry))
 }
 
 func (d *Daemon) buildDaemonSection() fyne.CanvasObject {
-	daemon := d.Cfg.Daemon
+	daemon := d.Cfg.EnsureDaemon()
 
-	currentAction := daemon.HotkeyAction
-	if currentAction == "" {
-		currentAction = "picker"
-	}
-	actionSelect := widget.NewSelect([]string{"picker", "previous", "default"}, func(val string) {
-		d.Cfg.Daemon.HotkeyAction = val
+	hotkeyEntry := widget.NewEntry()
+	hotkeyEntry.SetPlaceHolder(DefaultHotkey())
+	hotkeyEntry.SetText(daemon.Hotkey)
+	hotkeyEntry.OnSubmitted = func(val string) {
+		d.Cfg.SetDaemonHotkey(strings.TrimSpace(val))
 		d.persistConfig()
-	})
-	actionSelect.Selected = currentAction
-
-	currentPoll := daemon.PollInterval
-	if currentPoll == "" {
-		currentPoll = "5m"
 	}
-	pollSelect := widget.NewSelect([]string{"1m", "5m", "15m", "30m"}, func(val string) {
-		d.Cfg.Daemon.PollInterval = val
-		d.persistConfig()
-	})
-	pollSelect.Selected = currentPoll
 
 	currentInhibit := daemon.InhibitSleep
 	if currentInhibit == "" {
 		currentInhibit = "off"
 	}
 	inhibitSelect := widget.NewSelect([]string{"off", "sleep", "sleep+shutdown"}, func(val string) {
-		d.Cfg.Daemon.InhibitSleep = val
+		d.Cfg.SetDaemonInhibitSleep(val)
 		if d.sessions != nil {
 			d.sessions.SetMode(val)
 		}
@@ -311,15 +337,14 @@ func (d *Daemon) buildDaemonSection() fyne.CanvasObject {
 	inhibitSelect.Selected = currentInhibit
 
 	return widget.NewForm(
-		widget.NewFormItem("Hotkey action", actionSelect),
-		widget.NewFormItem("Poll interval", pollSelect),
+		widget.NewFormItem("Hotkey", hotkeyEntry),
 		widget.NewFormItem("Inhibit sleep", inhibitSelect),
 	)
 }
 
 func (d *Daemon) buildTargetSection() fyne.CanvasObject {
-	targetName := d.Cfg.DefaultTarget
-	t := d.Cfg.Targets[targetName]
+	targetName := d.Cfg.GetDefaultTarget()
+	t, _ := d.Cfg.Target(targetName)
 
 	heading := widget.NewLabel(fmt.Sprintf("Target: %s", targetName))
 	heading.TextStyle = fyne.TextStyle{Bold: true}
@@ -329,13 +354,13 @@ func (d *Daemon) buildTargetSection() fyne.CanvasObject {
 		currentAutoStop = "off"
 	}
 	autoStopSelect := widget.NewSelect([]string{"off", "15m", "30m", "1h"}, func(val string) {
-		t := d.Cfg.Targets[targetName]
-		if val == "off" {
-			t.AutoStop = ""
-		} else {
-			t.AutoStop = val
-		}
-		d.Cfg.Targets[targetName] = t
+		d.Cfg.UpdateTarget(targetName, func(t *config.Target, _ bool) {
+			if val == "off" {
+				t.AutoStop = ""
+			} else {
+				t.AutoStop = val
+			}
+		})
 		d.persistConfig()
 	})
 	autoStopSelect.Selected = currentAutoStop
@@ -345,13 +370,13 @@ func (d *Daemon) buildTargetSection() fyne.CanvasObject {
 		currentPreWarm = "off"
 	}
 	preWarmSelect := widget.NewSelect([]string{"off", "08:00", "09:00", "10:00"}, func(val string) {
-		t := d.Cfg.Targets[targetName]
-		if val == "off" {
-			t.PreWarm = ""
-		} else {
-			t.PreWarm = val
-		}
-		d.Cfg.Targets[targetName] = t
+		d.Cfg.UpdateTarget(targetName, func(t *config.Target, _ bool) {
+			if val == "off" {
+				t.PreWarm = ""
+			} else {
+				t.PreWarm = val
+			}
+		})
 		d.persistConfig()
 	})
 	preWarmSelect.Selected = currentPreWarm
@@ -364,8 +389,13 @@ func (d *Daemon) buildTargetSection() fyne.CanvasObject {
 	return container.NewVBox(heading, form)
 }
 
-// persistConfig saves config and rebuilds the tray menu.
+// persistConfig saves config and rebuilds the tray menu. A nil Cfg is a
+// no-op: SaveConfig would refuse it anyway (writing `null` over the user's
+// config file is never right), so don't even log it as an error here.
 func (d *Daemon) persistConfig() {
+	if d.Cfg == nil {
+		return
+	}
 	if err := config.SaveConfig(d.ConfigPath, d.Cfg); err != nil {
 		log.Printf("error saving config: %v", err)
 	}

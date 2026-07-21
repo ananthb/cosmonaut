@@ -10,6 +10,7 @@ import (
 
 	"github.com/adrg/xdg"
 
+	"github.com/linuskendall/cosmonaut/internal/fileutil"
 	"github.com/linuskendall/cosmonaut/internal/sshconfig"
 )
 
@@ -50,9 +51,24 @@ func Run() {
 // conf in ~/.ssh/cosmonaut/ so option additions (e.g. IdentityAgent none
 // for YubiKey users) take effect for codespaces created on older versions.
 // Idempotent: a no-op once every conf is at the current version.
+//
+// This is the first (defaults-only) pass: migration runs before config
+// is loaded — Run() is invoked from the applet startup path in
+// daemon_cmd.go before LoadConfig — so optsFor is nil here and every
+// conf is re-written with the default ManagedExtrasOptions
+// (ControlMaster off). That's enough to drive the v2→v3 marker rewrite
+// for older confs, which is the load-bearing piece this sweep
+// guarantees.
+//
+// daemon_cmd.go then does a second sweep once config is loaded that
+// supplies the real per-workspace ControlMaster setting, so users who
+// had ControlMaster enabled before the upgrade don't lose it on first
+// launch. The pre-load pass is retained so the v2→v3 marker rewrite
+// runs even on code paths that might skip the post-load sweep (e.g. if
+// LoadConfig were ever called lazily in the future).
 func refreshSSHExtras() {
 	paths := sshconfig.ResolvePaths()
-	n, err := sshconfig.RefreshAllManagedExtras(paths.IncludeDir)
+	n, err := sshconfig.RefreshAllManagedExtras(paths.IncludeDir, nil)
 	if err != nil {
 		log.Printf("migrate: refresh ssh extras: %v", err)
 		return
@@ -72,7 +88,7 @@ func migrateDir(oldDir, newDir string) {
 	}
 
 	// Create a symlink so both old and new paths work.
-	if err := os.MkdirAll(filepath.Dir(newDir), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(newDir), 0o755); err != nil {
 		log.Printf("migrate: mkdir %s: %v", filepath.Dir(newDir), err)
 		return
 	}
@@ -103,7 +119,7 @@ func migrateSSHInclude(sshConfigPath string) {
 		content = strings.Replace(content, oldSSHIncl, newSSHIncl, 1)
 	}
 
-	if err := os.WriteFile(sshConfigPath, []byte(content), 0644); err != nil {
+	if err := fileutil.WriteFileAtomic(sshConfigPath, []byte(content), 0o600); err != nil {
 		log.Printf("migrate: update %s: %v", sshConfigPath, err)
 	} else {
 		log.Printf("migrate: updated SSH include in %s", sshConfigPath)

@@ -7,12 +7,10 @@ import (
 	"strings"
 
 	"golang.design/x/hotkey"
-
-	"github.com/linuskendall/cosmonaut/internal/history"
 )
 
-// defaultHotkey returns the platform default hotkey string.
-func defaultHotkey() string {
+// DefaultHotkey returns the platform default hotkey string.
+func DefaultHotkey() string {
 	if runtime.GOOS == "darwin" {
 		return "Cmd+Shift+S"
 	}
@@ -20,9 +18,9 @@ func defaultHotkey() string {
 }
 
 func (d *Daemon) startHotkeyListener() {
-	hotkeyStr := defaultHotkey()
-	if d.Cfg != nil && d.Cfg.Daemon != nil && d.Cfg.Daemon.Hotkey != "" {
-		hotkeyStr = d.Cfg.Daemon.Hotkey
+	hotkeyStr := DefaultHotkey()
+	if dm := d.Cfg.EnsureDaemon(); dm.Hotkey != "" {
+		hotkeyStr = dm.Hotkey
 	}
 
 	mods, key, err := parseHotkeyString(hotkeyStr)
@@ -36,7 +34,11 @@ func (d *Daemon) startHotkeyListener() {
 		log.Printf("hotkey: failed to register %q: %v", hotkeyStr, err)
 		return
 	}
-	defer hk.Unregister()
+	defer func() {
+		if err := hk.Unregister(); err != nil {
+			log.Printf("hotkey: unregister: %v", err)
+		}
+	}()
 
 	log.Printf("hotkey: registered %s", hotkeyStr)
 
@@ -50,50 +52,14 @@ func (d *Daemon) startHotkeyListener() {
 	}
 }
 
-// hotkeyAction determines what to do when the hotkey is pressed,
-// based on the daemon.hotkeyAction config: "picker" (default),
-// "previous" (most recent repo from history), or "default" (default target).
+// hotkeyAction launches the default target, falling back to the picker
+// when no default target is configured.
 func (d *Daemon) hotkeyAction() {
-	action := "picker"
-	if d.Cfg != nil && d.Cfg.Daemon != nil && d.Cfg.Daemon.HotkeyAction != "" {
-		action = d.Cfg.Daemon.HotkeyAction
-	}
-
-	switch action {
-	case "previous":
-		d.hotkeyActionPrevious()
-
-	case "default":
-		if d.Cfg != nil && d.Cfg.DefaultTarget != "" {
-			if _, ok := d.Cfg.Targets[d.Cfg.DefaultTarget]; ok {
-				d.showGUI(d.Cfg.DefaultTarget)
-				return
-			}
-		}
-		// No default target: fall through to picker.
+	if d.Cfg.GetDefaultTarget() == "" {
 		d.showGUI()
-
-	default: // "picker"
-		d.showGUI()
-	}
-}
-
-// hotkeyActionPrevious launches the most recently used target from history,
-// falling back to the picker if there's no history.
-func (d *Daemon) hotkeyActionPrevious() {
-	hist := history.Load()
-	if len(hist.Entries) > 0 {
-		repo := hist.Entries[len(hist.Entries)-1].Repository
-		if name := d.targetNameForRepo(repo); name != "" {
-			d.showGUI(name)
-			return
-		}
-		// No config target: pass repo name directly so the child
-		// process can skip the repo selector TUI.
-		d.showGUI(repo)
 		return
 	}
-	d.showGUI()
+	d.launchDefaultTarget()
 }
 
 // parseHotkeyString converts a string like "Cmd+Shift+S" to hotkey modifiers and key.
@@ -139,16 +105,16 @@ var keyMap = map[string]hotkey.Key{
 	"0": hotkey.Key0, "1": hotkey.Key1, "2": hotkey.Key2, "3": hotkey.Key3,
 	"4": hotkey.Key4, "5": hotkey.Key5, "6": hotkey.Key6, "7": hotkey.Key7,
 	"8": hotkey.Key8, "9": hotkey.Key9,
-	"space":     hotkey.KeySpace,
-	"return":    hotkey.KeyReturn, "enter": hotkey.KeyReturn,
-	"escape":    hotkey.KeyEscape, "esc": hotkey.KeyEscape,
-	"tab":       hotkey.KeyTab,
-	"delete":    hotkey.KeyDelete, "backspace": hotkey.KeyDelete,
-	"up":        hotkey.KeyUp, "down": hotkey.KeyDown,
-	"left":      hotkey.KeyLeft, "right": hotkey.KeyRight,
-	"f1":  hotkey.KeyF1, "f2": hotkey.KeyF2, "f3": hotkey.KeyF3,
-	"f4":  hotkey.KeyF4, "f5": hotkey.KeyF5, "f6": hotkey.KeyF6,
-	"f7":  hotkey.KeyF7, "f8": hotkey.KeyF8, "f9": hotkey.KeyF9,
+	"space":  hotkey.KeySpace,
+	"return": hotkey.KeyReturn, "enter": hotkey.KeyReturn,
+	"escape": hotkey.KeyEscape, "esc": hotkey.KeyEscape,
+	"tab":    hotkey.KeyTab,
+	"delete": hotkey.KeyDelete, "backspace": hotkey.KeyDelete,
+	"up": hotkey.KeyUp, "down": hotkey.KeyDown,
+	"left": hotkey.KeyLeft, "right": hotkey.KeyRight,
+	"f1": hotkey.KeyF1, "f2": hotkey.KeyF2, "f3": hotkey.KeyF3,
+	"f4": hotkey.KeyF4, "f5": hotkey.KeyF5, "f6": hotkey.KeyF6,
+	"f7": hotkey.KeyF7, "f8": hotkey.KeyF8, "f9": hotkey.KeyF9,
 	"f10": hotkey.KeyF10, "f11": hotkey.KeyF11, "f12": hotkey.KeyF12,
 }
 

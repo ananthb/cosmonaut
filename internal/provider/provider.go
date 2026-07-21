@@ -42,7 +42,7 @@ type Manager interface {
 	StartWorkspace(workspace *Workspace) (*Workspace, error)
 	DeleteWorkspace(name string) error
 	EnsureReachable(workspace *Workspace) error
-	PrepareSSH(paths sshconfig.SSHPaths, workspace *Workspace) (string, error)
+	PrepareSSH(paths sshconfig.SSHPaths, workspace *Workspace, opts sshconfig.ManagedExtrasOptions) (string, error)
 }
 
 func RequireCommand(name string) error {
@@ -67,7 +67,8 @@ func MatchesTarget(ws *Workspace, t *config.Target) bool {
 	if ws == nil || t == nil {
 		return false
 	}
-	if t.Repository != "" && ws.Repository != "" && ws.Repository != t.Repository {
+	// Case-insensitive: GitHub repository names are.
+	if t.Repository != "" && ws.Repository != "" && !strings.EqualFold(ws.Repository, t.Repository) {
 		return false
 	}
 	explicitName := t.ExplicitWorkspaceName(ws.Provider)
@@ -152,4 +153,33 @@ func FilterByRepo(workspaces []Workspace, repo string) []Workspace {
 		}
 	}
 	return result
+}
+
+// GuessWorkspacePath returns the remote folder the editor should open:
+// the target's explicit workspacePath when set, otherwise a
+// /workspaces/<name> guess derived from the workspace or repository.
+// Shared by the CLI and the GUI so the heuristic can't drift between
+// them (it used to be duplicated verbatim in both).
+func GuessWorkspacePath(target config.Target, ws *Workspace) string {
+	if target.WorkspacePath != "" {
+		return target.WorkspacePath
+	}
+	if ws != nil && ws.Provider == NameCoder {
+		return "/workspaces/" + ws.Name
+	}
+	if target.Repository != "" {
+		parts := strings.SplitN(target.Repository, "/", 2)
+		return "/workspaces/" + parts[len(parts)-1]
+	}
+	if ws != nil && ws.Name != "" {
+		return "/workspaces/" + ws.Name
+	}
+	return "/workspaces"
+}
+
+// IsWorkspaceRunning reports whether ws is in a state where SSH should
+// already be reachable without a start.
+func IsWorkspaceRunning(ws Workspace) bool {
+	state := strings.ToLower(ws.State)
+	return state == "available" || state == "ready" || state == "running" || state == "connected"
 }

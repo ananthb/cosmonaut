@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/adrg/xdg"
+
+	"github.com/linuskendall/cosmonaut/internal/fileutil"
 )
 
 // Entry records a single repo usage.
@@ -33,14 +35,16 @@ func Load() *History {
 	return LoadFrom(defaultPath())
 }
 
-// LoadFrom reads history from a specific path.
+// LoadFrom reads history from a specific path. A missing or unparseable
+// file yields an empty History — the launcher should run even when
+// history is corrupt.
 func LoadFrom(path string) *History {
 	h := &History{}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return h
 	}
-	json.Unmarshal(data, h)
+	_ = json.Unmarshal(data, h)
 	return h
 }
 
@@ -51,14 +55,14 @@ func (h *History) Save() error {
 
 // SaveTo writes history to a specific path.
 func (h *History) SaveTo(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(h, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0644)
+	return fileutil.WriteFileAtomic(path, append(data, '\n'), 0o644)
 }
 
 // Touch records a repository as just used.

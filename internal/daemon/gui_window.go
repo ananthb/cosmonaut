@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"fmt"
-	"log"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -15,11 +14,6 @@ import (
 	"github.com/linuskendall/cosmonaut/internal/provider"
 )
 
-const (
-	guiWidth  float32 = 560
-	guiHeight float32 = 400
-)
-
 // unifiedWindow is the main Cosmonaut window with sidebar + content.
 type unifiedWindow struct {
 	daemon  *Daemon
@@ -29,77 +23,23 @@ type unifiedWindow struct {
 	tree    *widget.Tree
 
 	// Data for the tree.
-	allRepos     []string
-	recentCount  int
-	filter       string
-	filtered     []string // repos matching current filter
-	coderTargets []string
-}
+	allRepos []string
+	filter   string
+	filtered []string // repos matching current filter
 
-func (d *Daemon) newUnifiedWindow() *unifiedWindow {
-	win := d.app.NewWindow("Cosmonaut")
-	win.Resize(fyne.NewSize(guiWidth, guiHeight))
-	win.CenterOnScreen()
-
-	uw := &unifiedWindow{
-		daemon:  d,
-		win:     win,
-		content: container.NewStack(),
-	}
-
-	// Build initial repo list.
-	uw.loadRepos()
-
-	// Fetch all user repos in background.
-	go func() {
-		allUserRepos, err := provider.NewGitHubManager(d.Runner).ListRepositories()
-		if err != nil {
-			log.Printf("gui: fetch repos: %v", err)
-			return
-		}
-		fyne.Do(func() {
-			uw.allRepos = mergeRepos(uw.allRepos, allUserRepos)
-			uw.applyFilter()
-			uw.tree.Refresh()
-		})
-	}()
-
-	// Build sidebar.
-	filterEntry := widget.NewEntry()
-	filterEntry.PlaceHolder = "Filter..."
-	filterEntry.OnChanged = func(text string) {
-		uw.filter = text
-		uw.applyFilter()
-		uw.tree.Refresh()
-	}
-
-	uw.tree = uw.buildTree()
-
-	sidebar := container.NewBorder(
-		container.NewPadded(filterEntry), // top
-		nil,                              // bottom
-		nil, nil,
-		uw.tree, // center
-	)
-
-	// Initial content: welcome.
-	uw.showWelcome()
-
-	split := container.NewHSplit(sidebar, uw.content)
-	split.Offset = 0.35
-
-	win.SetContent(split)
-	return uw
+	// currentView re-invokes the active right-panel view on theme change.
+	currentView func()
+	// currentViewID identifies the rendered view so pending async
+	// done-callbacks can tell whether the user has navigated away (in
+	// which case re-rendering their old view would yank the UI back).
+	// Read and written on the Fyne main thread only.
+	currentViewID string
 }
 
 func (uw *unifiedWindow) loadRepos() {
 	repos := provider.UniqueRepos(filterWorkspacesByProvider(uw.daemon.Workspaces(), provider.NameGitHub))
 	repos = mergeRepos(repos, configRepos(uw.daemon.Cfg))
-	hist := history.Load()
-	sorted := hist.SortRepos(repos)
-	uw.recentCount = countRecentRepos(sorted, hist)
-	uw.allRepos = sorted
-	uw.coderTargets = configuredCoderTargets(uw.daemon.Cfg)
+	uw.allRepos = history.Load().SortRepos(repos)
 	uw.applyFilter()
 }
 
@@ -141,6 +81,7 @@ func repoNodeID(repo string) widget.TreeNodeID            { return repoPrefix + 
 func workspaceNodeID(providerName, name string) widget.TreeNodeID {
 	return wsPrefix + providerName + ":" + name
 }
+
 func newNodeID(providerName, context string) widget.TreeNodeID {
 	return newPrefix + providerName + ":" + context
 }
@@ -257,54 +198,22 @@ func (uw *unifiedWindow) buildTree() *widget.Tree {
 		},
 	)
 
-	t.OnSelected = func(id widget.TreeNodeID) {
-		if isRepoNode(id) {
-			repo := repoFromNode(id)
-			uw.showRepoSummary(repo)
-		} else if isWorkspaceNode(id) {
-			providerName, name := providerAndNameFromWorkspaceNode(id)
-			uw.showWorkspaceDetail(providerName, name)
-		} else if isNewNode(id) {
-			providerName, context := providerAndContextFromNewNode(id)
-			uw.showCreateNewForProvider(providerName, context)
-		} else if isSectionNode(id) {
-			if sectionFromNode(id) == provider.NameCoder {
-				uw.showCoderSummary()
-			} else {
-				uw.showWelcome()
-			}
-		}
-	}
-
+	// No OnSelected here: buildCosmoSidebar owns selection routing and
+	// assigns it right after calling buildTree.
 	return t
 }
 
 // --- Content panel builders ---
 
-func (uw *unifiedWindow) showWelcome() {
-	msg := widget.NewLabel("Select a repository or workspace to get started.")
-	msg.Alignment = fyne.TextAlignCenter
-	uw.setContent(container.NewCenter(msg))
-}
-
-func (uw *unifiedWindow) showRepoSummary(repo string) {
-	all := filterWorkspacesByProvider(uw.daemon.Workspaces(), provider.NameGitHub)
-	repoWS := provider.FilterByRepo(all, repo)
-
-	title := widget.NewLabel(repo)
-	title.TextStyle = fyne.TextStyle{Bold: true}
-
-	info := widget.NewLabel(fmt.Sprintf("%d workspace(s)", len(repoWS)))
-
-	createBtn := widget.NewButton("Create new GitHub codespace", func() {
-		uw.showCreateNewForProvider(provider.NameGitHub, repo)
-	})
-
-	uw.setContent(container.NewVBox(
-		layout.NewSpacer(),
-		container.NewCenter(container.NewVBox(title, info, createBtn)),
-		layout.NewSpacer(),
-	))
+// showDetailFor routes to the right detail page for ws. Coder
+// workspaces have a richer detail surface that takes the whole
+// Workspace; GitHub codespaces look up their cached entry by name.
+func (uw *unifiedWindow) showDetailFor(ws provider.Workspace) {
+	if ws.Provider == provider.NameCoder {
+		uw.showCoderWorkspaceDetail(ws)
+		return
+	}
+	uw.showWorkspaceDetail(ws.Provider, ws.Name)
 }
 
 func (uw *unifiedWindow) showWorkspaceDetail(providerName, name string) {
@@ -318,10 +227,12 @@ func (uw *unifiedWindow) showWorkspaceDetail(providerName, name string) {
 			return
 		}
 	}
-	uw.showWelcome()
+	uw.showCosmoWelcome()
 }
 
 func (uw *unifiedWindow) showCoderSummary() {
+	uw.currentView = uw.showCoderSummary
+	uw.currentViewID = "coder-summary"
 	all := filterWorkspacesByProvider(uw.daemon.Workspaces(), provider.NameCoder)
 	title := widget.NewLabel("Coder Workspaces")
 	title.TextStyle = fyne.TextStyle{Bold: true}
@@ -351,47 +262,7 @@ func (uw *unifiedWindow) showCreateNewForProvider(providerName, context string) 
 		uw.showCosmoCreateNewCoder()
 		return
 	}
-	uw.showCreateNew(context)
-}
-
-func (uw *unifiedWindow) showCreateNew(repo string) {
-	target, resolvedName := guiTargetForRepo(uw.daemon.Cfg, repo)
-
-	title := widget.NewLabel("Create a new codespace")
-	title.TextStyle = fyne.TextStyle{Bold: true}
-
-	subtitle := widget.NewLabel(repo)
-
-	entry := widget.NewEntry()
-	entry.PlaceHolder = "e.g., fix indexer health checks"
-
-	hint := widget.NewLabel("")
-
-	createBtn := widget.NewButton("Create", func() {
-		text := strings.TrimSpace(entry.Text)
-		if text == "" {
-			hint.SetText("Enter a short label so the codespace is easier to recognize.")
-			return
-		}
-		createTarget := target
-		createTarget.DisplayName = text
-		uw.daemon.runCreateAndLaunch(uw.win, createTarget, resolvedName)
-	})
-
-	cancelBtn := widget.NewButton("Cancel", func() {
-		uw.showWelcome()
-	})
-
-	uw.setContent(container.NewVBox(
-		layout.NewSpacer(),
-		container.NewCenter(container.NewVBox(
-			title, subtitle,
-			widget.NewLabel("What work are you planning to do?"),
-			entry, hint,
-			container.NewHBox(cancelBtn, layout.NewSpacer(), createBtn),
-		)),
-		layout.NewSpacer(),
-	))
+	uw.showCosmoCreateNew(context)
 }
 
 // --- Helper functions ---
@@ -418,7 +289,7 @@ func configRepos(cfg *config.Config) []string {
 	}
 	seen := make(map[string]bool)
 	var repos []string
-	for _, t := range cfg.Targets {
+	for _, t := range cfg.TargetsSnapshot() {
 		if t.Repository != "" && !seen[t.Repository] {
 			seen[t.Repository] = true
 			repos = append(repos, t.Repository)
@@ -429,7 +300,7 @@ func configRepos(cfg *config.Config) []string {
 
 func guiTargetForRepo(cfg *config.Config, repo string) (config.Target, string) {
 	if cfg != nil {
-		for name, t := range cfg.Targets {
+		for name, t := range cfg.TargetsSnapshot() {
 			if t.Repository == repo {
 				return t, name
 			}
@@ -445,12 +316,16 @@ func guiTargetForRepo(cfg *config.Config, repo string) (config.Target, string) {
 
 func guiTargetForCoderWorkspace(cfg *config.Config, ws provider.Workspace) (config.Target, string) {
 	if cfg != nil {
-		for name, t := range cfg.Targets {
+		// TargetsSnapshot deep-copies, so the WorkspaceName default applied
+		// below stays local instead of writing through the shared Coder
+		// pointer into the live config.
+		snap := cfg.TargetsSnapshot()
+		for name, t := range snap {
 			if t.Coder != nil && t.Coder.WorkspaceName == ws.Name {
 				return applyWorkspaceDefaults(t, ws), name
 			}
 		}
-		for name, t := range cfg.Targets {
+		for name, t := range snap {
 			if t.Coder != nil {
 				t = applyWorkspaceDefaults(t, ws)
 				if t.Coder.WorkspaceName == "" {
@@ -473,31 +348,9 @@ func applyWorkspaceDefaults(target config.Target, ws provider.Workspace) config.
 		target.Repository = ws.Repository
 	}
 	if target.WorkspacePath == "" {
-		target.WorkspacePath = guessWorkspacePath(target, &ws)
+		target.WorkspacePath = provider.GuessWorkspacePath(target, &ws)
 	}
 	return target
-}
-
-func guessWorkspacePath(target config.Target, ws *provider.Workspace) string {
-	if target.WorkspacePath != "" {
-		return target.WorkspacePath
-	}
-	if ws != nil && ws.Provider == provider.NameCoder {
-		return "/workspaces/" + ws.Name
-	}
-	if target.Repository != "" {
-		parts := strings.SplitN(target.Repository, "/", 2)
-		return "/workspaces/" + parts[len(parts)-1]
-	}
-	if ws != nil && ws.Name != "" {
-		return "/workspaces/" + ws.Name
-	}
-	return "/workspaces"
-}
-
-func isWorkspaceRunning(ws provider.Workspace) bool {
-	state := strings.ToLower(ws.State)
-	return state == "available" || state == "ready" || state == "running" || state == "connected"
 }
 
 func filterWorkspacesByProvider(workspaces []provider.Workspace, providerName string) []provider.Workspace {
@@ -543,7 +396,7 @@ func configuredCoderTargets(cfg *config.Config) []string {
 		return nil
 	}
 	var names []string
-	for name, target := range cfg.Targets {
+	for name, target := range cfg.TargetsSnapshot() {
 		if target.Coder != nil && target.Coder.Template != "" {
 			names = append(names, name)
 		}
@@ -575,30 +428,4 @@ func coderWorkspaceNameFromInput(raw string) string {
 		name = strings.Trim(name[:63], "-")
 	}
 	return name
-}
-
-func countRecentRepos(sorted []string, hist *history.History) int {
-	n := 0
-	for _, repo := range sorted {
-		found := false
-		for _, e := range hist.Entries {
-			if e.Repository == repo {
-				found = true
-				break
-			}
-		}
-		if !found {
-			break
-		}
-		n++
-	}
-	return n
-}
-
-// createGUIWindow creates a standard GUI window (used by flow for progress).
-func (d *Daemon) createGUIWindow(title string) fyne.Window {
-	win := d.app.NewWindow(title)
-	win.Resize(fyne.NewSize(guiWidth, guiHeight))
-	win.CenterOnScreen()
-	return win
 }

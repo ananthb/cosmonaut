@@ -4,15 +4,20 @@
 package sshconfig
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/linuskendall/cosmonaut/internal/fileutil"
 )
 
-const SSHIncludeLine = "Include ~/.ssh/cosmonaut/*.conf"
-const coderConfigFile = "coder.conf"
+const (
+	SSHIncludeLine  = "Include ~/.ssh/cosmonaut/*.conf"
+	coderConfigFile = "coder.conf"
+)
 
 // HostStarScopedLine is the form a bare `Host *` is rewritten to when the
 // user accepts the scoping fix. The negation patterns prevent the
@@ -85,6 +90,9 @@ func (p SSHPaths) CodespaceConfigPath(codespaceName string) string {
 }
 
 func (p SSHPaths) WorkspaceConfigPath(provider, workspaceName string) string {
+	// NOTE: cannot import provider package due to import cycle
+	// (provider imports sshconfig). Keep these literals in sync with
+	// provider.NameCoder / provider.NameGitHub.
 	if provider == "coder" {
 		return filepath.Join(p.IncludeDir, coderConfigFile)
 	}
@@ -92,6 +100,53 @@ func (p SSHPaths) WorkspaceConfigPath(provider, workspaceName string) string {
 		return filepath.Join(p.IncludeDir, workspaceName+".conf")
 	}
 	return filepath.Join(p.IncludeDir, provider+"-"+workspaceName+".conf")
+}
+
+// ProviderAndNameFromFilename reverses WorkspaceConfigPath's naming so a
+// caller walking IncludeDir can map a *.conf back to the (provider, name)
+// pair that produced it. The mapping mirrors WorkspaceConfigPath:
+//
+//   - "coder.conf"  -> ("coder", "")        // shared Coder file
+//   - "<name>.conf" -> ("github", "<name>") // GitHub codespace
+//
+// Today GitHub is the only provider that writes per-workspace files
+// (Coder shares coder.conf), so every non-"coder.conf" filename maps to
+// a GitHub workspace whose name may itself contain "-" (e.g.
+// "cs-abc-123"). If a future provider adds "<provider>-<name>.conf"
+// filenames, extend this function to recognize the prefix.
+func ProviderAndNameFromFilename(filename string) (provider, name string) {
+	base := strings.TrimSuffix(filepath.Base(filename), ".conf")
+	if base == "" {
+		return "github", ""
+	}
+	if base == "coder" {
+		return "coder", ""
+	}
+	return "github", base
+}
+
+// includeLineRe matches an actual, uncommented include line. A raw
+// substring check was used before, which a commented-out
+// `# Include ~/.ssh/cosmonaut/*.conf` satisfied — permanently disabling
+// setup with no diagnostic once a user commented the line to debug.
+var includeLineRe = regexp.MustCompile(`(?m)^[ \t]*[Ii]nclude[ \t]+~/\.ssh/cosmonaut/\*\.conf[ \t]*$`)
+
+// topLevelStanzaRe finds the first Host/Match directive; an include that
+// appears after it is scoped to that block by OpenSSH and does not apply
+// globally.
+var topLevelStanzaRe = regexp.MustCompile(`(?mi)^[ \t]*(Host|Match)[ \t]`)
+
+// hasGlobalIncludeLine reports whether config contains our include line
+// in the global section (before any Host/Match stanza).
+func hasGlobalIncludeLine(config string) bool {
+	loc := includeLineRe.FindStringIndex(config)
+	if loc == nil {
+		return false
+	}
+	if stanza := topLevelStanzaRe.FindStringIndex(config); stanza != nil && stanza[0] < loc[0] {
+		return false
+	}
+	return true
 }
 
 // EnsureConfigIncludesGenerated ensures the main SSH config includes the generated configs.
@@ -102,16 +157,18 @@ func EnsureConfigIncludesGenerated(mainConfigPath string) error {
 	}
 
 	currentStr := string(current)
-	if strings.Contains(currentStr, SSHIncludeLine) {
+	if hasGlobalIncludeLine(currentStr) {
 		return nil
 	}
 
 	updated := EnsureIncludeLine(currentStr)
 	dir := filepath.Dir(mainConfigPath)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(mainConfigPath, []byte(updated), 0644)
+	// Atomic write: a crash mid-write of ~/.ssh/config would otherwise
+	// lock the user out of every SSH host they use.
+	return fileutil.WriteFileAtomic(mainConfigPath, []byte(updated), 0o600)
 }
 
 func EnsureMainConfigIncludesGenerated(mainConfigPath string) error {
@@ -153,11 +210,18 @@ func ScopeHostStarBlocks(mainConfigPath string) (bool, error) {
 	}
 	backup := mainConfigPath + MainConfigBackupSuffix
 	if _, err := os.Stat(backup); os.IsNotExist(err) {
-		if err := os.WriteFile(backup, data, 0644); err != nil {
+		// Match the original file's mode: ~/.ssh/config is commonly 0600
+		// and the backup holds the same content, so a 0644 copy would
+		// quietly loosen its permissions.
+		mode := os.FileMode(0o600)
+		if st, err := os.Stat(mainConfigPath); err == nil {
+			mode = st.Mode().Perm()
+		}
+		if err := os.WriteFile(backup, data, mode); err != nil {
 			return false, fmt.Errorf("backup %s: %w", backup, err)
 		}
 	}
-	return true, os.WriteFile(mainConfigPath, []byte(updated), 0644)
+	return true, fileutil.WriteFileAtomic(mainConfigPath, []byte(updated), 0o600)
 }
 
 // ReadExistingAlias reads the SSH alias from an existing codespace config file.
@@ -178,6 +242,9 @@ func ReadExistingAlias(includeDir, codespaceName string) (string, bool) {
 
 func ReadExistingWorkspaceAlias(paths SSHPaths, provider, workspaceName string) (string, bool) {
 	path := paths.WorkspaceConfigPath(provider, workspaceName)
+	// NOTE: cannot import provider package due to import cycle
+	// (provider imports sshconfig). Keep this literal in sync with
+	// provider.NameCoder.
 	if provider == "coder" {
 		if _, err := os.Stat(path); err != nil {
 			return "", false
@@ -199,13 +266,16 @@ func isConcreteHostAlias(alias string) bool {
 	return alias != "" && !strings.ContainsAny(alias, "*!?")
 }
 
-// managedExtrasVersion is bumped whenever managedExtrasBody changes, so
-// existing on-disk confs get rewritten by RefreshAllManagedExtras on the
-// next applet start.
-const managedExtrasVersion = 2
+// managedExtrasVersion is bumped whenever the managed extras body shape
+// changes, so existing on-disk confs get rewritten by
+// RefreshAllManagedExtras on the next applet start.
+//
+//	v1 -> v2: added IdentityAgent / PKCS11Provider none
+//	v2 -> v3: added optional ControlMaster + ControlPath + ControlPersist
+const managedExtrasVersion = 3
 
-// managedExtrasBody is the cosmonaut-controlled tail of every codespace
-// conf. Indented two spaces so it sits inside gh's `Host cs-*` block.
+// keepaliveExtras is the always-on portion of the managed block.
+// Indented two spaces so it sits inside the surrounding `Host` block.
 //
 // Keepalive: ServerAliveInterval pings every 15s, ServerAliveCountMax
 // drops after 3 missed pongs (45s), ConnectionAttempts retries the
@@ -216,37 +286,99 @@ const managedExtrasVersion = 2
 // when a smartcard/YubiKey configured in ~/.ssh/config isn't plugged in.
 // gh emits explicit IdentityFile + IdentitiesOnly yes for codespaces, so
 // no agent is needed here.
-const managedExtrasBody = `  ServerAliveInterval 15
+const keepaliveExtras = `  ServerAliveInterval 15
   ServerAliveCountMax 3
   ConnectionAttempts 3
   IdentityAgent none
   PKCS11Provider none
 `
 
+// controlMasterExtras multiplexes additional SSH sessions over a single
+// TCP connection so reconnects feel instant. ControlPath uses %C (a
+// hash of host/port/user) under ~/.ssh/cosmonaut/ so masters land in
+// the cosmonaut-owned dir and stay tidy. ControlPersist 10m keeps the
+// master alive briefly after the last child exits.
+const controlMasterExtras = `  ControlMaster auto
+  ControlPath ~/.ssh/cosmonaut/cm-%C
+  ControlPersist 10m
+`
+
+// ManagedExtrasOptions toggles optional pieces of the managed block.
+// Defaults (zero value) keep only the keepalive/identity lines.
+type ManagedExtrasOptions struct {
+	// ControlMaster enables ControlMaster auto + ControlPersist 10m so
+	// subsequent sessions reuse one TCP connection.
+	ControlMaster bool
+}
+
 const (
 	managedBeginPrefix = "  # BEGIN cosmonaut managed extras"
 	managedEndPrefix   = "  # END cosmonaut managed extras"
 )
 
-// managedExtras returns the current sentinel-bracketed managed block.
-func managedExtras() string {
+// BuildManagedExtras returns the sentinel-bracketed managed block for the
+// given options. Exposed so callers can preview what will be written.
+func BuildManagedExtras(opts ManagedExtrasOptions) string {
+	body := keepaliveExtras
+	if opts.ControlMaster {
+		body += controlMasterExtras
+	}
 	return fmt.Sprintf("%s v%d\n%s%s v%d\n",
 		managedBeginPrefix, managedExtrasVersion,
-		managedExtrasBody,
+		body,
 		managedEndPrefix, managedExtrasVersion)
 }
+
+// hostStanzaStartRe matches a `Host ` directive at the start of a line.
+// Case-sensitive (OpenSSH treats `Host`/`host`/`HOST` interchangeably, but
+// the cosmonaut-managed confs we own always emit `Host` with a capital H,
+// and the safety check exists specifically to refuse mis-attaching to
+// non-Host trailing content so a stricter match is the right call).
+var hostStanzaStartRe = regexp.MustCompile(`(?m)^Host[ \t]`)
+
+// matchStanzaStartRe matches a `Match ` directive at the start of a line.
+var matchStanzaStartRe = regexp.MustCompile(`(?m)^Match[ \t]`)
 
 // applyManagedExtras returns content with any prior managed block (or
 // legacy unmarked extras from cosmonaut < v0.8.x) replaced by the
 // current managed block. Idempotent: applying twice yields the same
 // output as applying once.
-func applyManagedExtras(content string) string {
+//
+// Returns an error if the trimmed content does not end inside a `Host`
+// stanza — i.e. the most recent top-level `Host ` line is not later in
+// the file than any `Match ` line. An empty (or whitespace-only) file is
+// allowed and yields just the managed block. This guards against
+// silently mis-attaching the indented directives to a trailing comment,
+// `Match` block, or other non-Host content.
+func applyManagedExtras(content string, opts ManagedExtrasOptions) (string, error) {
 	content = stripManagedBlock(content)
 	body := strings.TrimRight(content, "\n")
-	if body == "" {
-		return managedExtras()
+	extras := BuildManagedExtras(opts)
+	if strings.TrimSpace(body) == "" {
+		return extras, nil
 	}
-	return body + "\n" + managedExtras()
+	if !endsInHostStanza(body) {
+		return "", fmt.Errorf("applyManagedExtras: file does not end with a Host stanza; refusing to mis-attach managed block")
+	}
+	return body + "\n" + extras, nil
+}
+
+// endsInHostStanza reports whether body's trailing stanza is a `Host`
+// block — i.e. the offset of the last `Host ` line at column 0 is
+// greater than the offset of the last `Match ` line at column 0. A body
+// with no top-level `Host` line is never inside a Host stanza.
+func endsInHostStanza(body string) bool {
+	hostIdxs := hostStanzaStartRe.FindAllStringIndex(body, -1)
+	if len(hostIdxs) == 0 {
+		return false
+	}
+	lastHost := hostIdxs[len(hostIdxs)-1][0]
+	matchIdxs := matchStanzaStartRe.FindAllStringIndex(body, -1)
+	if len(matchIdxs) == 0 {
+		return true
+	}
+	lastMatch := matchIdxs[len(matchIdxs)-1][0]
+	return lastHost > lastMatch
 }
 
 // stripManagedBlock removes the cosmonaut-managed tail from content.
@@ -264,10 +396,35 @@ func stripManagedBlock(content string) string {
 			return content[:i]
 		}
 	}
-	if i := indexAtLineStart(content, "  ServerAliveInterval 15"); i >= 0 {
+	if i := indexAtLineStart(content, "  ServerAliveInterval 15"); i >= 0 && isLegacyExtrasTail(content[i:]) {
 		return content[:i]
 	}
 	return content
+}
+
+// isLegacyExtrasTail reports whether tail consists solely of the lines a
+// pre-sentinel cosmonaut wrote. The legacy strip may only fire when
+// everything from the match to EOF is ours: a coder-config-ssh-generated
+// or hand-edited conf that happens to contain `  ServerAliveInterval 15`
+// mid-file used to lose every later Host stanza on each applet start.
+func isLegacyExtrasTail(tail string) bool {
+	allowed := map[string]bool{
+		"ServerAliveInterval 15": true,
+		"ServerAliveCountMax 3":  true,
+		"ConnectionAttempts 3":   true,
+		"IdentityAgent none":     true,
+		"PKCS11Provider none":    true,
+	}
+	for _, line := range strings.Split(tail, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !allowed[line] {
+			return false
+		}
+	}
+	return true
 }
 
 // indexAtLineStart finds substr in content, but only at the start of a
@@ -288,39 +445,45 @@ func indexAtLineStart(content, substr string) int {
 }
 
 // WriteCodespaceConfig writes the SSH config for a codespace, replacing
-// any prior cosmonaut-managed tail with the current one.
-func WriteCodespaceConfig(includeDir, codespaceName, content string) error {
-	if err := os.MkdirAll(includeDir, 0700); err != nil {
+// any prior cosmonaut-managed tail with one built from opts.
+func WriteCodespaceConfig(includeDir, codespaceName, content string, opts ManagedExtrasOptions) error {
+	if err := os.MkdirAll(includeDir, 0o700); err != nil {
 		return err
 	}
-	content = applyManagedExtras(content)
+	content, err := applyManagedExtras(content, opts)
+	if err != nil {
+		return err
+	}
 	path := filepath.Join(includeDir, codespaceName+".conf")
-	return os.WriteFile(path, []byte(content), 0644)
+	return fileutil.WriteFileAtomic(path, []byte(content), 0o644)
 }
 
-func WriteWorkspaceConfig(includeDir, provider, workspaceName, content string) error {
-	if err := os.MkdirAll(includeDir, 0700); err != nil {
+func WriteWorkspaceConfig(includeDir, provider, workspaceName, content string, opts ManagedExtrasOptions) error {
+	if err := os.MkdirAll(includeDir, 0o700); err != nil {
 		return err
 	}
-	content = applyManagedExtras(content)
+	content, err := applyManagedExtras(content, opts)
+	if err != nil {
+		return err
+	}
 	path := SSHPaths{IncludeDir: includeDir}.WorkspaceConfigPath(provider, workspaceName)
-	return os.WriteFile(path, []byte(content), 0644)
+	return fileutil.WriteFileAtomic(path, []byte(content), 0o644)
 }
 
-func EnsureWorkspaceConfig(paths SSHPaths, provider, workspaceName, content string) error {
-	if err := os.MkdirAll(paths.IncludeDir, 0700); err != nil {
+func EnsureWorkspaceConfig(paths SSHPaths, provider, workspaceName, content string, opts ManagedExtrasOptions) error {
+	if err := os.MkdirAll(paths.IncludeDir, 0o700); err != nil {
 		return err
 	}
 	if err := EnsureConfigIncludesGenerated(paths.MainConfigPath); err != nil {
 		return err
 	}
-	return WriteWorkspaceConfig(paths.IncludeDir, provider, workspaceName, content)
+	return WriteWorkspaceConfig(paths.IncludeDir, provider, workspaceName, content, opts)
 }
 
-// RefreshManagedExtras rewrites the managed block in path to the current
-// version. Returns true if the file was changed. No-op if already current
-// or if the file doesn't exist.
-func RefreshManagedExtras(path string) (bool, error) {
+// RefreshManagedExtras rewrites the managed block in path so it matches the
+// current version and the given opts. Returns true if the file was changed.
+// No-op if already current or if the file doesn't exist.
+func RefreshManagedExtras(path string, opts ManagedExtrasOptions) (bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -328,17 +491,22 @@ func RefreshManagedExtras(path string) (bool, error) {
 		}
 		return false, err
 	}
-	updated := applyManagedExtras(string(data))
+	updated, err := applyManagedExtras(string(data), opts)
+	if err != nil {
+		return false, err
+	}
 	if updated == string(data) {
 		return false, nil
 	}
-	return true, os.WriteFile(path, []byte(updated), 0644)
+	return true, fileutil.WriteFileAtomic(path, []byte(updated), 0o644)
 }
 
-// RefreshAllManagedExtras walks includeDir and refreshes the managed
-// block in every *.conf file. Returns the number of files updated.
-// Safe to call on every applet startup: idempotent and cheap.
-func RefreshAllManagedExtras(includeDir string) (int, error) {
+// RefreshAllManagedExtras walks includeDir and refreshes the managed block
+// in every *.conf file. optsFor maps a conf filename (e.g. "cs-abc.conf") to
+// the options for that file; if nil, every file gets the zero options (no
+// ControlMaster). Returns the number of files updated. Safe to call on
+// every applet startup: idempotent and cheap.
+func RefreshAllManagedExtras(includeDir string, optsFor func(filename string) ManagedExtrasOptions) (int, error) {
 	entries, err := os.ReadDir(includeDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -347,18 +515,26 @@ func RefreshAllManagedExtras(includeDir string) (int, error) {
 		return 0, err
 	}
 	n := 0
+	var errs []error
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".conf") {
 			continue
 		}
 		full := filepath.Join(includeDir, e.Name())
-		changed, err := RefreshManagedExtras(full)
+		var opts ManagedExtrasOptions
+		if optsFor != nil {
+			opts = optsFor(e.Name())
+		}
+		changed, err := RefreshManagedExtras(full, opts)
 		if err != nil {
-			return n, fmt.Errorf("%s: %w", full, err)
+			// Keep sweeping: one stray hand-made .conf must not block the
+			// refresh of every file after it on each applet start.
+			errs = append(errs, fmt.Errorf("%s: %w", full, err))
+			continue
 		}
 		if changed {
 			n++
 		}
 	}
-	return n, nil
+	return n, errors.Join(errs...)
 }

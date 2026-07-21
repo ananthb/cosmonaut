@@ -22,7 +22,7 @@ func (c *caffeinateInhibitor) Engage(mode string) error {
 		return nil
 	}
 	cmd := exec.Command("caffeinate", "-i")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = daemonChildSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		return err
 	}
