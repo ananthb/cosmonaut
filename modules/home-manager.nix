@@ -250,7 +250,7 @@ in
 
       hotkey = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
-        default = if pkgs.stdenv.isDarwin then "Cmd+Shift+S" else "Ctrl+Shift+S";
+        default = if pkgs.stdenv.hostPlatform.isDarwin then "Cmd+Shift+S" else "Ctrl+Shift+S";
         description = "Global hotkey to open the codespace picker.";
       };
 
@@ -330,7 +330,7 @@ in
     # home.file with recursive=true creates per-file symlinks which macOS
     # does not recognise as a valid bundle. Instead, copy the whole .app
     # directory and strip the quarantine xattr so Gatekeeper accepts it.
-    home.activation.cosmonaut-app = lib.mkIf pkgs.stdenv.isDarwin
+    home.activation.cosmonaut-app = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin
       (lib.hm.dag.entryAfter [ "writeBoundary" ] ''
         app_src="${wrappedPackage}/Applications/Cosmonaut.app"
         app_dst="$HOME/Applications/Cosmonaut.app"
@@ -341,7 +341,7 @@ in
       '');
 
     # macOS launchd agent for the daemon.
-    launchd.agents.cosmonaut-daemon = lib.mkIf (cfg.daemon.enable && pkgs.stdenv.isDarwin) {
+    launchd.agents.cosmonaut-daemon = lib.mkIf (cfg.daemon.enable && pkgs.stdenv.hostPlatform.isDarwin) {
       enable = true;
       config = {
         # Launch from the .app bundle so macOS associates the process
@@ -365,7 +365,7 @@ in
     };
 
     # Linux systemd user service for the daemon.
-    systemd.user.services.cosmonaut-daemon = lib.mkIf (cfg.daemon.enable && pkgs.stdenv.isLinux) {
+    systemd.user.services.cosmonaut-daemon = lib.mkIf (cfg.daemon.enable && pkgs.stdenv.hostPlatform.isLinux) {
       Unit = {
         Description = "cosmonaut background daemon";
         After = [ "graphical-session.target" ];
