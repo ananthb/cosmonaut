@@ -157,6 +157,99 @@ func TestLoadCoderConfig(t *testing.T) {
 	}
 }
 
+func TestProviderEnabled(t *testing.T) {
+	f := false
+	tr := true
+
+	var nilCfg *Config
+	if !nilCfg.ProviderEnabled("github") {
+		t.Fatal("nil config should report providers enabled")
+	}
+
+	cfg := &Config{}
+	if !cfg.ProviderEnabled("github") || !cfg.ProviderEnabled("coder") {
+		t.Fatal("unset enabled should default to true")
+	}
+	if cfg.ProviderEnabled("unknown") {
+		t.Fatal("unknown provider should report disabled")
+	}
+
+	cfg.Providers.GitHub.Enabled = &f
+	cfg.Providers.Coder.Enabled = &tr
+	if cfg.ProviderEnabled("github") {
+		t.Fatal("github should be disabled")
+	}
+	if !cfg.ProviderEnabled("coder") {
+		t.Fatal("coder should be enabled")
+	}
+
+	cfg.SetProviderEnabled("github", &tr)
+	if !cfg.ProviderEnabled("github") {
+		t.Fatal("SetProviderEnabled(true) should enable github")
+	}
+	cfg.SetProviderEnabled("github", nil)
+	if cfg.Providers.GitHub.Enabled != nil {
+		t.Fatal("SetProviderEnabled(nil) should clear the field")
+	}
+}
+
+func TestEffectiveWorkspaceProviderFallsBackToCoder(t *testing.T) {
+	f := false
+
+	cfg := &Config{}
+	if got := cfg.EffectiveWorkspaceProvider(); got != "github" {
+		t.Fatalf("default provider = %q, want github", got)
+	}
+
+	cfg.Providers.GitHub.Enabled = &f
+	if got := cfg.EffectiveWorkspaceProvider(); got != "coder" {
+		t.Fatalf("provider with github disabled = %q, want coder", got)
+	}
+
+	// An explicit workspaceProvider always wins over the fallback.
+	cfg.WorkspaceProvider = "github"
+	if got := cfg.EffectiveWorkspaceProvider(); got != "github" {
+		t.Fatalf("explicit provider = %q, want github", got)
+	}
+
+	// Both disabled: no sensible fallback, keep the github default.
+	cfg = &Config{}
+	cfg.Providers.GitHub.Enabled = &f
+	cfg.Providers.Coder.Enabled = &f
+	if got := cfg.EffectiveWorkspaceProvider(); got != "github" {
+		t.Fatalf("provider with both disabled = %q, want github", got)
+	}
+}
+
+func TestLoadConfigParsesProviderEnabled(t *testing.T) {
+	content := `{
+		"providers": {
+			"github": {"enabled": false},
+			"coder": {"enabled": true}
+		}
+	}`
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProviderEnabled("github") {
+		t.Fatal("github should be disabled from config")
+	}
+	if !cfg.ProviderEnabled("coder") {
+		t.Fatal("coder should be enabled from config")
+	}
+	if got := cfg.EffectiveWorkspaceProvider(); got != "coder" {
+		t.Fatalf("effective provider = %q, want coder", got)
+	}
+}
+
 func TestTargetCloneIsDeep(t *testing.T) {
 	up := true
 	orig := Target{

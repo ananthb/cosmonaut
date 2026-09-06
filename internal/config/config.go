@@ -234,6 +234,51 @@ func (c *Config) GetDefaultTarget() string {
 	return c.DefaultTarget
 }
 
+// ProviderEnabled reports whether the named provider ("github" or
+// "coder"; the config package can't import provider's Name constants
+// without a cycle) is enabled. Unset means enabled, so existing configs
+// keep today's both-providers behavior; unknown names report false.
+func (c *Config) ProviderEnabled(name string) bool {
+	if c == nil {
+		return true
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.providerEnabledLocked(name)
+}
+
+// providerEnabledLocked is the lock-free body of ProviderEnabled,
+// callable by methods that already hold c.mu.
+func (c *Config) providerEnabledLocked(name string) bool {
+	var enabled *bool
+	switch name {
+	case "github":
+		enabled = c.Providers.GitHub.Enabled
+	case "coder":
+		enabled = c.Providers.Coder.Enabled
+	default:
+		return false
+	}
+	return enabled == nil || *enabled
+}
+
+// SetProviderEnabled persists an explicit enabled/disabled state for a
+// provider. Passing nil clears it (so the default — enabled — applies).
+// Unknown provider names are ignored.
+func (c *Config) SetProviderEnabled(name string, val *bool) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch name {
+	case "github":
+		c.Providers.GitHub.Enabled = val
+	case "coder":
+		c.Providers.Coder.Enabled = val
+	}
+}
+
 // CoderOrganization returns Providers.Coder.Organization under the read lock.
 func (c *Config) CoderOrganization() string {
 	if c == nil {
@@ -305,9 +350,20 @@ type ProviderConfigs struct {
 	Coder  CoderProviderConfig  `json:"coder,omitempty"`
 }
 
-type GitHubProviderConfig struct{}
+type GitHubProviderConfig struct {
+	// Enabled turns the GitHub Codespaces provider on or off across the
+	// whole app: polling, tray section, GUI sidebar, auth prompts, and
+	// health checks. nil means enabled (the historical behavior), so a
+	// user who only works with Coder can set it to false and never see a
+	// "fix GitHub sign-in" nag for a token that lacks the codespace
+	// scope.
+	Enabled *bool `json:"enabled,omitempty"`
+}
 
 type CoderProviderConfig struct {
+	// Enabled mirrors GitHubProviderConfig.Enabled for the Coder
+	// provider. nil means enabled.
+	Enabled      *bool  `json:"enabled,omitempty"`
 	Organization string `json:"organization,omitempty"`
 }
 
@@ -409,7 +465,7 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	if cfg.WorkspaceProvider == "" {
-		cfg.WorkspaceProvider = "github"
+		cfg.WorkspaceProvider = cfg.EffectiveWorkspaceProvider()
 	}
 
 	return &cfg, nil
@@ -447,9 +503,15 @@ func (c *Config) EffectiveWorkspaceProvider() string {
 
 // effectiveWorkspaceProviderLocked is the lock-free body of
 // EffectiveWorkspaceProvider, callable by other methods that already hold
-// c.mu (read or write).
+// c.mu (read or write). When no provider is chosen explicitly the
+// default is github — unless github is disabled and coder isn't, in
+// which case a coder-only config works without also having to set
+// workspaceProvider.
 func (c *Config) effectiveWorkspaceProviderLocked() string {
 	if c == nil || c.WorkspaceProvider == "" {
+		if c != nil && !c.providerEnabledLocked("github") && c.providerEnabledLocked("coder") {
+			return "coder"
+		}
 		return "github"
 	}
 	return c.WorkspaceProvider
