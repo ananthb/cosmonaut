@@ -165,8 +165,16 @@ let
     defaultTarget = cfg.defaultTarget;
     workspaceProvider = cfg.workspaceProvider;
     editor = cfg.editor;
-    providers = filterNulls {
-      coder = lib.optionalAttrs (cfg.providers.coder.organization != null) {
+    ssh =
+      if cfg.ssh.multiplexer == null
+      then null
+      else { multiplexer = cfg.ssh.multiplexer; };
+    providers = lib.filterAttrs (_: v: v != { }) {
+      github = filterNulls {
+        enabled = cfg.providers.github.enable;
+      };
+      coder = filterNulls {
+        enabled = cfg.providers.coder.enable;
         organization = cfg.providers.coder.organization;
       };
     };
@@ -229,10 +237,41 @@ in
       description = "Workspace provider to use globally. Defaults to github.";
     };
 
+    providers.github.enable = lib.mkOption {
+      type = lib.types.nullOr lib.types.bool;
+      default = null;
+      description = ''
+        Whether the GitHub Codespaces provider is enabled. null (the
+        default) leaves it on; false hides its tray/GUI sections,
+        auth prompts, and health checks, and stops polling gh.
+      '';
+    };
+
+    providers.coder.enable = lib.mkOption {
+      type = lib.types.nullOr lib.types.bool;
+      default = null;
+      description = ''
+        Whether the Coder provider is enabled. null (the default)
+        leaves it on; false hides its tray/GUI sections and stops
+        polling the coder CLI.
+      '';
+    };
+
     providers.coder.organization = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Default Coder organization name or UUID.";
+    };
+
+    ssh.multiplexer = lib.mkOption {
+      type = lib.types.nullOr (lib.types.enum [ "none" "tmux" "zellij" ]);
+      default = null;
+      description = ''
+        Terminal multiplexer that `cosmonaut shell` and the GUI/TUI SSH
+        buttons attach to on the remote, so the session survives SSH
+        drops. Applies to every workspace unless overridden per
+        workspace in the app. null (the default) means none.
+      '';
     };
 
     targets = lib.mkOption {
