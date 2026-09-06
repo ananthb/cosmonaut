@@ -165,6 +165,10 @@ let
     defaultTarget = cfg.defaultTarget;
     workspaceProvider = cfg.workspaceProvider;
     editor = cfg.editor;
+    ssh =
+      if cfg.ssh.multiplexer == null
+      then null
+      else { multiplexer = cfg.ssh.multiplexer; };
     providers = lib.filterAttrs (_: v: v != { }) {
       github = filterNulls {
         enabled = cfg.providers.github.enable;
@@ -257,6 +261,17 @@ in
       type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Default Coder organization name or UUID.";
+    };
+
+    ssh.multiplexer = lib.mkOption {
+      type = lib.types.nullOr (lib.types.enum [ "none" "tmux" "zellij" ]);
+      default = null;
+      description = ''
+        Terminal multiplexer that `cosmonaut shell` and the GUI/TUI SSH
+        buttons attach to on the remote, so the session survives SSH
+        drops. Applies to every workspace unless overridden per
+        workspace in the app. null (the default) means none.
+      '';
     };
 
     targets = lib.mkOption {

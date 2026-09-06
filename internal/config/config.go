@@ -33,10 +33,47 @@ type Config struct {
 	Targets           map[string]Target `json:"targets"`
 	Daemon            *DaemonConfig     `json:"daemon,omitempty"`
 
+	// SSH holds SSH defaults that apply to every workspace unless a
+	// per-workspace WorkspaceSSH entry overrides them. Workspace names are
+	// often ephemeral (Coder workspaces come and go), so a declarative
+	// config wants one global knob rather than per-name entries.
+	SSH *SSHConfig `json:"ssh,omitempty"`
+
 	// WorkspaceSSH holds per-workspace SSH options keyed by "<provider>:<name>"
 	// (e.g. "github:cs-abc" or "coder:my-ws"). Unset workspaces fall back to
-	// the global defaults: ControlMaster on, Tmux off.
+	// the SSH defaults above, then to the built-ins: ControlMaster on, no
+	// multiplexer.
 	WorkspaceSSH map[string]WorkspaceSSHSettings `json:"workspaceSsh,omitempty"`
+}
+
+// Terminal multiplexer choices for the remote shell. The multiplexer keeps
+// the remote session alive across SSH drops; reconnecting re-attaches to it.
+const (
+	MultiplexerNone   = "none"
+	MultiplexerTmux   = "tmux"
+	MultiplexerZellij = "zellij"
+)
+
+// Multiplexers lists the valid multiplexer values in UI presentation order.
+var Multiplexers = []string{MultiplexerNone, MultiplexerTmux, MultiplexerZellij}
+
+// ValidMultiplexer reports whether s names a known multiplexer setting.
+func ValidMultiplexer(s string) bool {
+	switch s {
+	case MultiplexerNone, MultiplexerTmux, MultiplexerZellij:
+		return true
+	}
+	return false
+}
+
+// SSHConfig holds global SSH defaults, overridable per workspace via
+// WorkspaceSSH.
+type SSHConfig struct {
+	// Multiplexer wraps `cosmonaut shell` (and the GUI/TUI SSH buttons)
+	// in a persistent terminal multiplexer session on the remote:
+	// "tmux" (`tmux new -A -s cosmonaut`), "zellij"
+	// (`zellij attach --create cosmonaut`), or "none". Default: none.
+	Multiplexer string `json:"multiplexer,omitempty"`
 }
 
 // WorkspaceSSHSettings stores per-workspace SSH knobs. Each field is a pointer
@@ -47,9 +84,12 @@ type WorkspaceSSHSettings struct {
 	// so additional sessions to the same workspace reuse the existing TCP
 	// connection. Default: true.
 	ControlMaster *bool `json:"controlMaster,omitempty"`
-	// Tmux wraps `cosmonaut shell` (and the GUI's SSH button) in
-	// `tmux new -A -s cosmonaut` on the remote so the shell session
-	// survives SSH drops. Default: false.
+	// Multiplexer overrides the global SSH multiplexer for this
+	// workspace: "none", "tmux", or "zellij". See SSHConfig.Multiplexer.
+	Multiplexer *string `json:"multiplexer,omitempty"`
+	// Tmux is the legacy boolean form of Multiplexer (true == "tmux").
+	// Still parsed so existing configs keep working; Multiplexer wins
+	// when both are set, and writes clear this field.
 	Tmux *bool `json:"tmux,omitempty"`
 }
 
@@ -74,18 +114,31 @@ func (c *Config) WorkspaceSSHControlMaster(provider, name string) bool {
 	return true
 }
 
-// WorkspaceSSHTmux returns the resolved Tmux setting for a workspace, with
-// the default (false) applied when no explicit value is set.
-func (c *Config) WorkspaceSSHTmux(provider, name string) bool {
+// WorkspaceSSHMultiplexer returns the resolved multiplexer setting for a
+// workspace. Resolution order: the workspace's Multiplexer, its legacy Tmux
+// boolean, the global SSH default, then "none". Values outside the known
+// set are treated as unset.
+func (c *Config) WorkspaceSSHMultiplexer(provider, name string) string {
 	if c == nil {
-		return false
+		return MultiplexerNone
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if s, ok := c.WorkspaceSSH[WorkspaceSSHKey(provider, name)]; ok && s.Tmux != nil {
-		return *s.Tmux
+	if s, ok := c.WorkspaceSSH[WorkspaceSSHKey(provider, name)]; ok {
+		if s.Multiplexer != nil && ValidMultiplexer(*s.Multiplexer) {
+			return *s.Multiplexer
+		}
+		if s.Tmux != nil {
+			if *s.Tmux {
+				return MultiplexerTmux
+			}
+			return MultiplexerNone
+		}
 	}
-	return false
+	if c.SSH != nil && ValidMultiplexer(c.SSH.Multiplexer) {
+		return c.SSH.Multiplexer
+	}
+	return MultiplexerNone
 }
 
 // SetWorkspaceSSHControlMaster persists an explicit ControlMaster setting for
@@ -94,10 +147,15 @@ func (c *Config) SetWorkspaceSSHControlMaster(provider, name string, val *bool) 
 	c.setWorkspaceSSH(provider, name, func(s *WorkspaceSSHSettings) { s.ControlMaster = val })
 }
 
-// SetWorkspaceSSHTmux persists an explicit Tmux setting for a workspace.
-// Passing nil clears it (so the default applies).
-func (c *Config) SetWorkspaceSSHTmux(provider, name string, val *bool) {
-	c.setWorkspaceSSH(provider, name, func(s *WorkspaceSSHSettings) { s.Tmux = val })
+// SetWorkspaceSSHMultiplexer persists an explicit multiplexer setting for a
+// workspace. Passing nil clears it (so the global default applies). The
+// legacy Tmux boolean is cleared either way — it must not shadow the new
+// field, and once the user touches the setting the config is migrated.
+func (c *Config) SetWorkspaceSSHMultiplexer(provider, name string, val *string) {
+	c.setWorkspaceSSH(provider, name, func(s *WorkspaceSSHSettings) {
+		s.Multiplexer = val
+		s.Tmux = nil
+	})
 }
 
 func (c *Config) setWorkspaceSSH(provider, name string, mut func(*WorkspaceSSHSettings)) {
@@ -112,7 +170,7 @@ func (c *Config) setWorkspaceSSH(provider, name string, mut func(*WorkspaceSSHSe
 	}
 	s := c.WorkspaceSSH[key]
 	mut(&s)
-	if s.ControlMaster == nil && s.Tmux == nil {
+	if s.ControlMaster == nil && s.Tmux == nil && s.Multiplexer == nil {
 		delete(c.WorkspaceSSH, key)
 		if len(c.WorkspaceSSH) == 0 {
 			c.WorkspaceSSH = nil
